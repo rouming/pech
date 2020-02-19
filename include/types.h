@@ -14,6 +14,7 @@
 #include <endian.h>
 #include <ctype.h>
 #include <stddef.h>
+#include <inttypes.h>
 
 #include "kconfig.h"
 
@@ -83,8 +84,6 @@ typedef int16_t  __s16;
 typedef uint16_t __u16;
 typedef int32_t  __s32;
 typedef uint32_t __u32;
-//typedef int64_t  __s64;
-//typedef uint64_t __u64;
 typedef size_t   __kernel_size_t;
 
 typedef __u32 u32;
@@ -95,7 +94,21 @@ typedef __s8 s8;
 typedef __s64 s64;
 typedef __s32 s32;
 
+#define ENOPARAM	519	/* Parameter not supported */
 #define ENOTSUPP	524	/* Operation is not supported */
+
+#define kstrtouint(s, b, r)						\
+	({ typeof(*r) n; errno = 0; n = strtoumax(s, NULL, b);		\
+	   -errno ?: (*r = n, 0);					\
+	})
+#define kstrtoint(s, b, r)						\
+	({ typeof(*r) n; errno = 0; n = strtoimax(s, NULL, b);		\
+	   -errno ?: (*r = n, 0);					\
+	})
+#define kstrtoull(s, b, r)						\
+	({ typeof(*r) n; errno = 0; n = strtoull(s, NULL, b);		\
+	   -errno ?: (*r = n, 0);					\
+	})
 
 #include "overflow.h"
 

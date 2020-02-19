@@ -45,7 +45,7 @@ struct key_type key_type_ceph = {
 
 int __init ceph_crypto_init(void)
 {
-	return -ENOTSUP;
+	return 0;
 }
 
 void ceph_crypto_shutdown(void)

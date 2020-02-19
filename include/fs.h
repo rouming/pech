@@ -90,9 +90,9 @@ struct fs_parameter_spec {
  * Store the supplementary warning message for the process if the process has
  * enabled the facility.
  */
-#define warnf(fc, fmt, ...) ({})
-#define warn_plog(p, fmt, ...) ({})
-#define warnfc(fc, fmt, ...) ({})
+#define warnf(fc, fmt, ...) pr_warn(fmt "\n", ##__VA_ARGS__)
+#define warn_plog(p, fmt, ...) pr_warn(fmt "\n", ##__VA_ARGS__)
+#define warnfc(fc, fmt, ...) pr_warn(fmt "\n", ##__VA_ARGS__)
 
 /**
  * errorf - Store supplementary error message
@@ -102,9 +102,9 @@ struct fs_parameter_spec {
  * Store the supplementary error message for the process if the process has
  * enabled the facility.
  */
-#define errorf(fc, fmt, ...) ({})
-#define error_plog(p, fmt, ...) ({})
-#define errorfc(fc, fmt, ...) ({})
+#define errorf(fc, fmt, ...) pr_err(fmt "\n", ##__VA_ARGS__)
+#define error_plog(p, fmt, ...) pr_err(fmt "\n", ##__VA_ARGS__)
+#define errorfc(fc, fmt, ...) pr_err(fmt "\n", ##__VA_ARGS__)
 
 /**
  * invalf - Store supplementary invalid argument error message

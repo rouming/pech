@@ -100,4 +100,14 @@ static inline int atomic_xchg(atomic_t *v, int val)
 	return xchg(&(v)->counter, val);
 }
 
+static __always_inline bool
+atomic_try_cmpxchg_relaxed(atomic_t *v, int *old, int new)
+{
+	int r, o = *old;
+	r = atomic_cmpxchg(v, o, new);
+	if (unlikely(r != o))
+		*old = r;
+	return likely(r == o);
+}
+
 #endif

@@ -8,11 +8,11 @@
 //#include <linux/highmem.h>
 //#include <linux/inet.h>
 //#include <linux/kthread.h>
-//#include <linux/net.h>
+#include "net.h"
 //#include <linux/nsproxy.h>
 //#include <linux/sched/mm.h>
 #include "slab.h"
-//#include <linux/socket.h>
+#include "socket.h"
 //#include <linux/string.h>
 #ifdef	CONFIG_BLOCK
 //#include <linux/bio.h>

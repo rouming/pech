@@ -10,7 +10,7 @@ OBJ = $(SOURCES:.c=.o)
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 pech: $(OBJ)
-	$(CC) -o $@ $^
+	$(CC) -o $@ $^ -lresolv
 
 .PHONY: clean
 

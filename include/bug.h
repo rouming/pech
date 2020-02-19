@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <limits.h>
+#include <stdlib.h>
 
 #define TAINT_WARN			9
 

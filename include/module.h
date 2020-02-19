@@ -2,6 +2,9 @@
 #ifndef _MODULE_H
 #define _MODULE_H
 
+#include "types.h"
+#include "list.h"
+
 struct kernel_param;
 
 struct kernel_param_ops {
@@ -19,9 +22,34 @@ struct kernel_param {
 	const struct kernel_param_ops *ops;
 };
 
-#define module_param_cb(...)
-#define module_init(...)
-#define module_exit(...)
+struct module {
+	struct list_head entry;
+	int (*init)(void);
+	void (*exit)(void);
+};
 
+extern struct list_head modules_list;
+
+extern void init_modules(void);
+
+#define module_param_cb(...)
+
+#define module_init(init_fn)						\
+	static struct module this_module = {				\
+		.entry = LIST_HEAD_INIT(this_module.entry),		\
+		.init  = init_fn					\
+	};								\
+	__attribute__((constructor))					\
+	static void register_##init_fn(void)				\
+	{								\
+		list_add_tail(&this_module.entry, &modules_list);	\
+	}
+
+#define module_exit(exit_fn)						\
+	__attribute__((constructor))					\
+	static void register_##init_fn(void)				\
+	{								\
+		this_module.exit = exit_fn;				\
+	}
 
 #endif

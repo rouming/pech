@@ -17,6 +17,8 @@
 #define kvmalloc(size, flags) malloc(size)
 #define kvfree(ptr) free(ptr)
 
+#define kfree_rcu(p, rcu) kfree(p)
+
 static inline void *kmemdup(const void *buf, size_t len, unsigned long flags)
 {
 	(void)flags;
@@ -37,6 +39,9 @@ static inline void *kmemdup(const void *buf, size_t len, unsigned long flags)
 #define memalloc_nofs_restore(v)
 
 struct kmem_cache {
+	const char * name;
+	unsigned int size;
+	int          alloced;
 };
 
 static inline
@@ -44,21 +49,44 @@ struct kmem_cache *kmem_cache_create(const char *name, unsigned int size,
 				     unsigned int align, slab_flags_t flags,
 				     void (*ctor)(void *))
 {
-	//XXX
-	return NULL;
+	struct kmem_cache *cache;
+
+	(void)flags;
+	(void)ctor;
+
+	cache = calloc(1, sizeof(*cache));
+	if (unlikely(!cache))
+		return NULL;
+
+	cache->name = name;
+	cache->size = size;
+
+	return cache;
 }
 
 
 static inline
 void kmem_cache_destroy(struct kmem_cache *c)
 {
+	WARN_ON(c->alloced);
+	free(c);
 }
 
 static inline __malloc
 void *kmem_cache_alloc(struct kmem_cache *c, gfp_t flags)
 {
-	//XXX
-	return NULL;
+	void *mem;
+
+	mem = malloc(c->size);
+	if (unlikely(!mem))
+		return NULL;
+
+	c->alloced++;
+
+	if (flags & __GFP_ZERO)
+		memset(mem, 0, c->size);
+
+	return mem;
 }
 
 static inline void *kmem_cache_zalloc(struct kmem_cache *k, gfp_t flags)
@@ -69,6 +97,8 @@ static inline void *kmem_cache_zalloc(struct kmem_cache *k, gfp_t flags)
 static inline
 void kmem_cache_free(struct kmem_cache *c, void *p)
 {
+	c->alloced--;
+	free(p);
 }
 
 #define KMEM_CACHE(__struct, __flags)					\

@@ -3,10 +3,19 @@
 #include "mutex.h"
 #include "ceph/osd_client.h"
 
+int ceph_osdc_setup(void)
+{
+	return 0;
+}
+
+void ceph_osdc_cleanup(void)
+{
+}
+
 int ceph_osdc_init(struct ceph_osd_client *osdc,
 		   struct ceph_client *client)
 {
-	return -ENOTSUP;
+	return 0;
 }
 
 void ceph_osdc_stop(struct ceph_osd_client *osdc)

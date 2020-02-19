@@ -5,6 +5,8 @@
 struct spinlock {};
 typedef struct spinlock spinlock_t;
 
+#define DEFINE_SPINLOCK(x)	spinlock_t x
+
 #define spin_lock_init(s);
 #define spin_lock(s)
 #define spin_unlock(s)
