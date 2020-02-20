@@ -33,6 +33,11 @@ static inline int atomic_read(const atomic_t *v)
 	return v->counter;
 }
 
+static inline s64 atomic64_read(const atomic64_t *v)
+{
+	return v->counter;
+}
+
 /**
  * atomic_set - set atomic variable
  * @v: pointer of type atomic_t
@@ -56,7 +61,17 @@ static inline void atomic_inc(atomic_t *v)
 	v->counter++;
 }
 
+static inline void atomic_dec(atomic_t *v)
+{
+	v->counter--;
+}
+
 static inline int atomic_inc_return(atomic_t *v)
+{
+	return ++v->counter;
+}
+
+static inline s64 atomic64_inc_return(atomic64_t *v)
 {
 	return ++v->counter;
 }

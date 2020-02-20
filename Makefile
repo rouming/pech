@@ -1,6 +1,6 @@
 CC = gcc
 INCDIR = ./include
-CFLAGS = -I$(INCDIR) -D_GNU_SOURCE -g -O2
+CFLAGS = -I$(INCDIR) -D_GNU_SOURCE -D__KERNEL__ -g -O2
 
 DEPS = $(shell find include/ -name '*.h')
 SOURCES:= $(shell find src/ -name '*.c')

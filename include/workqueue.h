@@ -8,6 +8,10 @@
 enum {
 	WQ_UNBOUND		= 1 << 1, /* not bound to any cpu */
 	WQ_MEM_RECLAIM		= 1 << 3, /* may be used for memory reclaim */
+
+	__WQ_ORDERED		= 1 << 17, /* internal: workqueue is ordered */
+	__WQ_LEGACY		= 1 << 18, /* internal: create*_workqueue() */
+	__WQ_ORDERED_EXPLICIT	= 1 << 19, /* internal: alloc_ordered_workqueue() */
 };
 
 struct work_struct;
@@ -80,6 +84,32 @@ extern void deinit_workqueue(void);
 extern struct workqueue_struct *alloc_workqueue(const char *fmt,
 						unsigned int flags,
 						int max_active, ...);
+
+/**
+ * alloc_ordered_workqueue - allocate an ordered workqueue
+ * @fmt: printf format for the name of the workqueue
+ * @flags: WQ_* flags (only WQ_FREEZABLE and WQ_MEM_RECLAIM are meaningful)
+ * @args...: args for @fmt
+ *
+ * Allocate an ordered workqueue.  An ordered workqueue executes at
+ * most one work item at any given time in the queued order.  They are
+ * implemented as unbound workqueues with @max_active of one.
+ *
+ * RETURNS:
+ * Pointer to the allocated workqueue on success, %NULL on failure.
+ */
+#define alloc_ordered_workqueue(fmt, flags, args...)			\
+	alloc_workqueue(fmt, WQ_UNBOUND | __WQ_ORDERED |		\
+			__WQ_ORDERED_EXPLICIT | (flags), 1, ##args)
+
+#define create_workqueue(name)						\
+	alloc_workqueue("%s", __WQ_LEGACY | WQ_MEM_RECLAIM, 1, (name))
+#define create_freezable_workqueue(name)				\
+	alloc_workqueue("%s", __WQ_LEGACY | WQ_FREEZABLE | WQ_UNBOUND |	\
+			WQ_MEM_RECLAIM, 1, (name))
+#define create_singlethread_workqueue(name)				\
+	alloc_ordered_workqueue("%s", __WQ_LEGACY | WQ_MEM_RECLAIM, name)
+
 extern void destroy_workqueue(struct workqueue_struct *wq);
 extern void flush_workqueue(struct workqueue_struct *wq);
 
@@ -97,5 +127,19 @@ extern bool cancel_delayed_work_sync(struct delayed_work *gdwork);
 extern bool mod_delayed_work(struct workqueue_struct *wq,
 			     struct delayed_work *dwork,
 			     unsigned long delay);
+
+/**
+ * schedule_delayed_work - put work task in global workqueue after delay
+ * @dwork: job to be done
+ * @delay: number of jiffies to wait or 0 for immediate execution
+ *
+ * After waiting for a given time this puts a job in the kernel-global
+ * workqueue.
+ */
+static inline bool schedule_delayed_work(struct delayed_work *dwork,
+					 unsigned long delay)
+{
+	return queue_delayed_work(system_wq, dwork, delay);
+}
 
 #endif

@@ -7,5 +7,6 @@ struct mutex {};
 #define mutex_init(m)
 #define mutex_lock(m)
 #define mutex_unlock(m)
+#define mutex_is_locked(m) (0)
 
 #endif

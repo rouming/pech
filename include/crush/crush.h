@@ -2,12 +2,12 @@
 #ifndef CEPH_CRUSH_CRUSH_H
 #define CEPH_CRUSH_CRUSH_H
 
-//#ifdef __KERNEL__
+#ifdef __KERNEL__
 # include "rbtree.h"
 # include "types.h"
-//#else
-//# include "crush_compat.h"
-//#endif
+#else
+# include "crush_compat.h"
+#endif
 
 /*
  * CRUSH is a pseudo-random data distribution algorithm that
@@ -192,10 +192,10 @@ struct crush_choose_arg {
  *
  */
 struct crush_choose_arg_map {
-//#ifdef __KERNEL__
+#ifdef __KERNEL__
 	struct rb_node node;
 	s64 choose_args_index;
-//#endif
+#endif
 	struct crush_choose_arg *args; /*!< replacement for each bucket
                                             in the crushmap */
 	__u32 size;                    /*!< size of the __args__ array */

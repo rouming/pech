@@ -14,6 +14,8 @@
 #define kcalloc(n, size, flags) calloc(n, size)
 #define kfree(ptr) free(ptr)
 
+#define kstrndup(s, len, flags) strndup(s, len)
+
 #define kvmalloc(size, flags) malloc(size)
 #define kvfree(ptr) free(ptr)
 

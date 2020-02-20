@@ -18,6 +18,8 @@ extern struct page empty_zero_page;
 
 #define ZERO_PAGE(vaddr) &empty_zero_page
 
+#define page_address(p) ((p)->ptr)
+
 #define kmap(p) ((p)->ptr)
 #define kunmap(p)
 
@@ -45,5 +47,7 @@ extern void __free_pages(struct page *page, unsigned int order);
 
 #define __free_page(page) __free_pages((page), 0)
 #define free_page(addr) free_pages((addr), 0)
+
+#define set_page_dirty_lock(p)
 
 #endif

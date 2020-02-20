@@ -134,7 +134,7 @@ ssize_t sock_no_sendpage(struct socket *sock, struct page *page,
 	struct kmsghdr msg = {.msg_flags = flags};
 	struct kvec iov;
 
-	iov.iov_base = page->ptr + offset;
+	iov.iov_base = page_address(page) + offset;
 	iov.iov_len = size;
 	res = kernel_sendmsg(sock, &msg, &iov, 1, size);
 

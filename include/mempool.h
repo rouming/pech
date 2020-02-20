@@ -17,4 +17,7 @@ extern void mempool_destroy(mempool_t *pool);
 extern void *mempool_alloc(mempool_t *pool, gfp_t gfp_mask) __malloc;
 extern void mempool_free(void *element, mempool_t *pool);
 
+#define mempool_create_slab_pool(min, kc)		\
+	mempool_create(min, NULL, NULL, kc)
+
 #endif
