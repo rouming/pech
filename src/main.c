@@ -97,7 +97,7 @@ int main(int argc, char **argv)
 	}
 
 	task = task_create(start_task, copt);
-	BUG_ON(IS_ERR(task));
+	BUG_ON(!task);
 	wake_up_process(task);
 
 	/* Run till the end */

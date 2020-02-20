@@ -121,7 +121,7 @@ void init_event(void)
 	BUG_ON(event_struct.epollfd < 0);
 
 	task = task_create(event_task, &event_struct);
-	BUG_ON(IS_ERR(task));
+	BUG_ON(!task);
 
 	wake_up_process(task);
 }

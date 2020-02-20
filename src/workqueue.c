@@ -400,12 +400,15 @@ static struct worker *create_worker(struct worker_pool *pool)
 	struct worker *worker;
 
 	worker = malloc(sizeof(*worker));
-	BUG_ON(!worker);
+	if (unlikely(!worker))
+		return NULL;
 
-	worker->pool = pool;
 	worker->task = task_create(worker_thread, worker);
-	BUG_ON(!worker->task);
-
+	if (unlikely(!worker->task)) {
+		free(worker);
+		return NULL;
+	}
+	worker->pool = pool;
 	INIT_LIST_HEAD(&worker->scheduled);
 
 	pool->nr_workers++;
@@ -424,8 +427,8 @@ void wq_worker_sleeping(struct task_struct *task)
 		    create_worker(pool);
 
 		next = first_idle_worker(pool);
-		BUG_ON(!next);
-		wake_up_process(next->task);
+		if (!WARN_ON(!next))
+			wake_up_process(next->task);
 	}
 }
 
@@ -441,8 +444,12 @@ static void init_worker_pool(struct worker_pool *pool)
 	INIT_LIST_HEAD(&pool->idle_list);
 	hash_init(pool->busy_hash);
 
-	for (i = 0; i < MIN_IDLE_WORKERS_IN_POOL; i++)
-		create_worker(pool);
+	for (i = 0; i < MIN_IDLE_WORKERS_IN_POOL; i++) {
+		struct worker *worker;
+
+		worker = create_worker(pool);
+		BUG_ON(!worker);
+	}
 }
 
 void init_workqueue(void)

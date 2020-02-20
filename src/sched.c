@@ -162,8 +162,8 @@ struct task_struct *task_create(task_func_t *func, void *param)
 	union task_ptr ptr;
 
 	task = task_alloc(func, param, TASK_STACK_SIZE);
-	if (!task)
-		return ERR_PTR(-ENOMEM);
+	if (unlikely(!task))
+		return NULL;
 
 	if (getcontext(&task->tsk_ctx) == -1)
 		BUG();
