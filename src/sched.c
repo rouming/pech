@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include <ucontext.h>
-#define USE_VALGRIND
-#ifdef USE_VALGRIND
+#ifdef _USE_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
 
@@ -80,7 +79,7 @@ static struct task_struct *task_alloc(task_func_t *func, void *arg,
 		free(task);
 		return NULL;
 	}
-#ifdef USE_VALGRIND
+#ifdef _USE_VALGRIND
 	VALGRIND_STACK_REGISTER(task->tsk_stack, task->tsk_stack + stack_sz);
 #endif
 	init_completion(&task->tsk_exited);
@@ -97,7 +96,7 @@ static void task_destroy(struct task_struct *task)
 	BUG_ON(task == &idle_task);
 	BUG_ON(task->tsk_state != TASK_DEAD);
 	BUG_ON(!list_empty(&task->tsk_list));
-#ifdef USE_VALGRIND
+#ifdef _USE_VALGRIND
 	VALGRIND_STACK_DEREGISTER(task->tsk_stack);
 #endif
 	free(task->tsk_stack);
