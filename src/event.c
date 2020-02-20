@@ -13,56 +13,12 @@ struct event_task_struct {
 	bool stopped;
 };
 
-static inline int to_epoll_op(int op)
-{
-	int epollop = 0;
-
-	if (op == EV_CTL_ADD)
-		epollop = EPOLL_CTL_ADD;
-	else if (op == EV_CTL_MOD)
-		epollop = EPOLL_CTL_MOD;
-	else if (op == EV_CTL_DEL)
-		epollop = EPOLL_CTL_DEL;
-	else
-		return -EINVAL;
-
-	return epollop;
-}
-
-static inline int to_epoll_events(int ev)
-{
-	int epollev = 0;
-
-	if (ev & EV_IN)
-		epollev |= EPOLLIN;
-	if (ev & EV_OUT)
-		epollev |= EPOLLOUT;
-	if (ev & EV_ERR)
-		epollev |= EPOLLERR;
-
-	return epollev;
-}
-
-static inline int from_epoll_events(int epollev)
-{
-	int ev = 0;
-
-	if (epollev & EPOLLIN)
-		ev |= EV_IN;
-	if (epollev & EPOLLOUT)
-		ev |= EV_OUT;
-	if (epollev & EPOLLERR)
-		ev |= EV_ERR;
-
-	return ev;
-}
-
 static void event_item_action(struct epoll_event *ev)
 {
 	struct event_item *item;
 
 	item = (struct event_item *)ev->data.ptr;
-	item->revents = from_epoll_events(ev->events);
+	item->revents = ev->events;
 	item->action(item);
 }
 
@@ -134,12 +90,12 @@ void stop_event(void)
 static int __event_item_mod(struct event_item *item, int op)
 {
 	struct epoll_event ev = {
-		.events = to_epoll_events(item->events),
+		.events = item->events,
 		.data.ptr = item
 	};
 	int ret;
 
-	ret = epoll_ctl(event_struct.epollfd, to_epoll_op(op),
+	ret = epoll_ctl(event_struct.epollfd, op,
 			item->fd, &ev);
 	if (ret < 0)
 		return -errno;
@@ -147,14 +103,23 @@ static int __event_item_mod(struct event_item *item, int op)
 	return 0;
 }
 
-int event_item_add(struct event_item *item)
+int event_item_add(struct event_item *item, int fd)
 {
+	item->fd = fd;
+
 	return __event_item_mod(item, EPOLL_CTL_ADD);
 }
 
 int event_item_del(struct event_item *item)
 {
-	return __event_item_mod(item, EPOLL_CTL_DEL);
+	int ret = -EBADF;
+
+	if (item->fd >= 0) {
+		ret = __event_item_mod(item, EPOLL_CTL_DEL);
+		item->fd = -1;
+	}
+
+	return ret;
 }
 
 int event_item_mod(struct event_item *item)
