@@ -211,7 +211,7 @@ static void worker_leave_idle(struct worker *worker)
 	struct worker_pool *pool = worker->pool;
 
 	pool->nr_idle--;
-	list_del(&worker->entry);
+	list_del_init(&worker->entry);
 }
 
 /**
@@ -252,8 +252,10 @@ static void wq_dec_nr_in_flight(struct workqueue_struct *wq,
 				int work_color)
 {
 
-	if (!(work_flags & WORK_DELAYED))
+	if (!(work_flags & WORK_DELAYED)) {
+		BUG_ON(!wq->nr_active);
 		wq->nr_active--;
+	}
 
 	wq->nr_in_flight[work_color]--;
 
@@ -291,7 +293,7 @@ static void process_one_work(struct worker *worker, struct work_struct *work)
 		return;
 	}
 
-	list_del(&work->entry);
+	list_del_init(&work->entry);
 
 	/* Careful, can be NULL for linked barriers */
 	wq = work->wq;
@@ -815,7 +817,7 @@ static bool cancel_work(struct work_struct *work)
 	 */
 
 	wq_dec_nr_in_flight(work->wq, work->flags, work->color);
-	list_del(&work->entry);
+	list_del_init(&work->entry);
 
 	/* Clear all flags including pending */
 	work->flags = 0;
@@ -925,10 +927,13 @@ bool cancel_delayed_work(struct delayed_work *dwork)
 	struct work_struct *work = &dwork->work;
 	bool del;
 
-	timer_del(&dwork->timer);
-	if (del)
+	del = timer_del(&dwork->timer);
+	if (del) {
 		/* Timer was not executed yet, so work was not even queued */
+		WARN_ON(work->flags != WORK_PENDING);
+		work->flags = 0;
 		return true;
+	}
 
 	return cancel_work(work);
 }
