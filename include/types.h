@@ -38,6 +38,7 @@
 
 #define smp_acquire__after_ctrl_dep()		barrier()
 #define smp_mb() barrier()
+#define smp_store_mb(var, value)  do { WRITE_ONCE(var, value); barrier(); } while (0)
 
 #define likely(x)	__builtin_expect(!!(x), 1)
 #define unlikely(x)	__builtin_expect(!!(x), 0)
@@ -94,6 +95,7 @@ typedef __s8 s8;
 typedef __s64 s64;
 typedef __s32 s32;
 
+#define ERESTARTSYS	512
 #define ENOPARAM	519	/* Parameter not supported */
 #define ENOTSUPP	524	/* Operation is not supported */
 
@@ -132,6 +134,7 @@ typedef unsigned int __bitwise slab_flags_t;
 #define be16_to_cpu(x)  be16toh(x)
 
 #define EXPORT_SYMBOL(x)
+#define EXPORT_SYMBOL_GPL(x)
 #define MODULE_AUTHOR(x);
 #define MODULE_DESCRIPTION(x);
 #define MODULE_LICENSE(x);

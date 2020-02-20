@@ -63,7 +63,7 @@ static int parse_options(struct ceph_options *opts, int argc, char **argv)
 	return ret;
 }
 
-static void start_task(void *arg)
+static int start_task(void *arg)
 {
 	struct ceph_options *copt = arg;
 	struct ceph_client *c;
@@ -74,6 +74,8 @@ static void start_task(void *arg)
 
 	ret = ceph_open_session(c);
 	printf(">> %s: ceph_open_session()=%d\n", __func__, ret);
+
+	return ret;
 }
 
 int main(int argc, char **argv)

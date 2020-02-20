@@ -22,7 +22,7 @@ static void event_item_action(struct epoll_event *ev)
 	item->action(item);
 }
 
-static void event_task(void *arg)
+static int event_task(void *arg)
 {
 	struct event_task_struct *s = arg;
 	struct epoll_event evs[128];
@@ -60,6 +60,8 @@ static void event_task(void *arg)
 
 	s->epollfd = -1;
 	s->stopped = false;
+
+	return 0;
 }
 
 static __thread struct event_task_struct event_struct = {

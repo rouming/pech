@@ -2,6 +2,12 @@
 #ifndef _SCHED_H
 #define _SCHED_H
 
+/*
+ * wake flags
+ */
+#define WF_SYNC			0x01		/* Waker goes to sleep after wakeup */
+
+
 /* Used in tsk->state: */
 #define TASK_RUNNING			0x0000
 #define TASK_INTERRUPTIBLE		0x0001
@@ -40,9 +46,14 @@
 /*
  * Per process flags
  */
-#define PF_WQ_WORKER		0x00000020	/* I'm a workqueue worker */
+#define PF_WQ_WORKER        0x00000020	/* I'm a workqueue worker */
+#define PF_KTHREAD          0x00200000	/* I am a kernel thread */
 
-typedef void (task_func_t)(void *arg);
+/* Do not support signals */
+#define signal_pending_state(...) (0)
+#define signal_pending(...)       (0)
+
+typedef int (task_func_t)(void *arg);
 
 struct task_struct;
 
@@ -50,6 +61,7 @@ extern __thread struct task_struct *current;
 
 extern void __set_current_state(long state);
 #define set_current_state(s) __set_current_state(s)
+extern int get_current_flags(void);
 extern void set_current_flags(int flags);
 extern void clear_current_flags(int flags);
 
@@ -59,6 +71,8 @@ extern void init_sched(void);
 extern struct task_struct *task_create(task_func_t *func, void *param);
 extern unsigned int tasks_to_run(void);
 
+extern bool kthread_should_stop(void);
+extern int kthread_stop(struct task_struct *task);
 extern int wake_up_process(struct task_struct *task);
 
 extern void schedule(void);

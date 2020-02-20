@@ -352,7 +352,7 @@ static void process_scheduled_works(struct worker *worker)
 	}
 }
 
-static void worker_thread(void *arg)
+static int worker_thread(void *arg)
 {
 	struct worker *collision, *worker = arg;
 	struct worker_pool *pool = worker->pool;
@@ -393,6 +393,8 @@ repeat:
 
 	/* Eventually free worker and exit the thread */
 	free_worker(worker);
+
+	return 0;
 }
 
 static struct worker *create_worker(struct worker_pool *pool)

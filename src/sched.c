@@ -8,6 +8,7 @@
 #include "types.h"
 #include "sched.h"
 #include "wait.h"
+#include "completion.h"
 #include "timedef.h"
 #include "timer.h"
 #include "err.h"
@@ -16,13 +17,17 @@
 
 struct task_struct {
 	struct list_head tsk_list;
-
+	int         tsk_ref;
 	ucontext_t  tsk_ctx;
 	void	    *tsk_stack;
 	task_func_t *tsk_func;
 	void        *tsk_arg;
 	long        tsk_state;
 	int         tsk_flags;
+	struct completion
+		    tsk_exited;
+	bool        tsk_should_stop;
+	int         tsk_exit_code;
 };
 
 __thread struct task_struct *current;
@@ -39,6 +44,11 @@ void init_sched(void)
 void __set_current_state(long state)
 {
 	current->tsk_state = state;
+}
+
+int get_current_flags(void)
+{
+	return current->tsk_flags;
 }
 
 void set_current_flags(int flags)
@@ -73,10 +83,11 @@ static struct task_struct *task_alloc(task_func_t *func, void *arg,
 #ifdef USE_VALGRIND
 	VALGRIND_STACK_REGISTER(task->tsk_stack, task->tsk_stack + stack_sz);
 #endif
-
+	init_completion(&task->tsk_exited);
 	task->tsk_func = func;
 	task->tsk_arg = arg;
 	task->tsk_state = TASK_NEW;
+	task->tsk_ref = 1;
 
 	return task;
 }
@@ -85,12 +96,23 @@ static void task_destroy(struct task_struct *task)
 {
 	BUG_ON(task == &idle_task);
 	BUG_ON(task->tsk_state != TASK_DEAD);
-	list_del(&task->tsk_list);
+	BUG_ON(!list_empty(&task->tsk_list));
 #ifdef USE_VALGRIND
 	VALGRIND_STACK_DEREGISTER(task->tsk_stack);
 #endif
 	free(task->tsk_stack);
 	free(task);
+}
+
+static void get_task_struct(struct task_struct *task)
+{
+	task->tsk_ref++;
+}
+
+static void put_task_struct(struct task_struct *task)
+{
+	if (!--task->tsk_ref)
+		task_destroy(task);
 }
 
 static void task_switch_to(struct task_struct *from, struct task_struct *to)
@@ -114,11 +136,11 @@ void schedule(void)
 	next = list_first_entry_or_null(&current->tsk_list,
 					struct task_struct, tsk_list);
 	if (next) {
-		if (current->tsk_state == TASK_DEAD) {
+		if (current->tsk_state == TASK_DEAD)
 			dead_task = current;
-		} else if (current->tsk_state != TASK_RUNNING) {
+
+		if (current->tsk_state != TASK_RUNNING)
 			list_del_init(&current->tsk_list);
-		}
 		task_switch_to(current, next);
 	} else {
 		/* No tasks to execute */
@@ -128,7 +150,7 @@ void schedule(void)
 	}
 	if (dead_task) {
 		BUG_ON(current == dead_task);
-		task_destroy(dead_task);
+		put_task_struct(dead_task);
 		dead_task = NULL;
 	}
 	if (current->tsk_flags & PF_WQ_WORKER)
@@ -148,9 +170,12 @@ static void task_trampoline(int i0, int i1)
 		.i = { i0, i1 }
 	};
 	struct task_struct *task = ptr.p;
+	int ret;
 
-	task->tsk_func(task->tsk_arg);
+	ret = task->tsk_func(task->tsk_arg);
+	task->tsk_exit_code = ret;
 	task->tsk_state = TASK_DEAD;
+	complete_all(&task->tsk_exited);
 	schedule();
 	BUG();
 	__builtin_unreachable();
@@ -172,6 +197,7 @@ struct task_struct *task_create(task_func_t *func, void *param)
 	task->tsk_ctx.uc_stack.ss_flags = 0;
 	task->tsk_ctx.uc_link = NULL;
 	task->tsk_state = TASK_IDLE;
+	task->tsk_flags = PF_KTHREAD; /* no other threads here */
 	INIT_LIST_HEAD(&task->tsk_list);
 
 	ptr.p = task;
@@ -261,6 +287,47 @@ long __sched io_schedule_timeout(long timeout)
 	long ret;
 
 	ret = schedule_timeout(timeout);
+
+	return ret;
+}
+
+/**
+ * kthread_should_stop - should this kthread return now?
+ *
+ * When someone calls kthread_stop() on your kthread, it will be woken
+ * and this will return true.  You should then return, and your return
+ * value will be passed through to kthread_stop().
+ */
+bool kthread_should_stop(void)
+{
+	return current->tsk_should_stop;
+}
+
+/**
+ * kthread_stop - stop a thread created by kthread_create().
+ * @k: thread created by kthread_create().
+ *
+ * Sets kthread_should_stop() for @k to return true, wakes it, and
+ * waits for it to exit. This can also be called after kthread_create()
+ * instead of calling wake_up_process(): the thread will exit without
+ * calling threadfn().
+ *
+ * If threadfn() may call do_exit() itself, the caller must ensure
+ * task_struct can't go away.
+ *
+ * Returns the result of threadfn(), or %-EINTR if wake_up_process()
+ * was never called.
+ */
+int kthread_stop(struct task_struct *task)
+{
+	int ret;
+
+	get_task_struct(task);
+	task->tsk_should_stop = true;
+	wake_up_process(task);
+	wait_for_completion(&task->tsk_exited);
+	ret = task->tsk_exit_code;
+	put_task_struct(task);
 
 	return ret;
 }
