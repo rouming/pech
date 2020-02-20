@@ -26,7 +26,8 @@ static int event_task(void *arg)
 {
 	struct event_task_struct *s = arg;
 	struct epoll_event evs[128];
-	int i, num, timeout;
+	unsigned int timeout;
+	int i, num;
 
 	while (!s->stopped) {
 		/* Get closest expiration timeout from timer */

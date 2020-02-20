@@ -4,7 +4,7 @@
 
 static struct rb_root timer_root = RB_ROOT;
 
-unsigned long timer_calc_msecs_timeout(void)
+unsigned int timer_calc_msecs_timeout(void)
 {
 	struct timer *first;
 	unsigned long now;

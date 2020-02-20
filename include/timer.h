@@ -27,7 +27,7 @@ struct timer {
 	RB_CLEAR_NODE(&(t)->node);				\
 	} while (0)
 
-extern unsigned long timer_calc_msecs_timeout(void);
+extern unsigned int timer_calc_msecs_timeout(void);
 extern void timer_run(void);
 
 extern void timer_add(struct timer *timer, unsigned long jexpire,

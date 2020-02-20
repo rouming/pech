@@ -3,24 +3,18 @@
 #define _TIMEDEF_H
 
 #include "types.h"
-
 #include <time.h>
 
-#define HZ 100
+#define HZ 1000
 
-typedef __s64 time64_t;
-typedef __u64 timeu64_t;
+#define MSEC_PER_SEC  1000L
 
-struct timespec64 {
-	time64_t	tv_sec;			/* seconds */
-	long		tv_nsec;		/* nanoseconds */
-};
+#define NSEC_PER_SEC  1000000000L
+#define NSEC_PER_MSEC 1000000L
 
-/* Jiffies here is always nsecs from epoch */
-#define jiffies ({ unsigned long j = nsecs(); j; })
-#define round_jiffies_relative(j) j
-
-#define NSEC_PER_SEC	1000000000L
+/* Jiffies here is always msecs from epoch */
+#define jiffies ({ unsigned long j = nsecs(); j / NSEC_PER_MSEC; })
+#define round_jiffies_relative(j) (j)
 
 /*
  *	These inlines deal with timer wrapping correctly. You are 
@@ -47,6 +41,14 @@ struct timespec64 {
 	 ((long)((a) - (b)) >= 0))
 #define time_before_eq(a,b)	time_after_eq(b,a)
 
+typedef __s64 time64_t;
+typedef __u64 timeu64_t;
+
+struct timespec64 {
+	time64_t	tv_sec;			/* seconds */
+	long		tv_nsec;		/* nanoseconds */
+};
+
 static inline unsigned long long nsecs(void)
 {
 	struct timespec ts = {0, 0};
@@ -57,12 +59,12 @@ static inline unsigned long long nsecs(void)
 
 static inline unsigned int jiffies_to_msecs(const unsigned long j)
 {
-	return j / 1000000;
+	return j;
 }
 
 static inline unsigned long msecs_to_jiffies(const unsigned int m)
 {
-	return m * 1000000;
+	return m;
 }
 
 static inline void
@@ -73,7 +75,7 @@ jiffies_to_timespec64(const unsigned long j, struct timespec64 *value)
 	 * one divide.
 	 */
 	u32 rem;
-	value->tv_sec = div_u64_rem((u64)j, NSEC_PER_SEC, &rem);
+	value->tv_sec = div_u64_rem((u64)j, MSEC_PER_SEC, &rem);
 	value->tv_nsec = rem;
 }
 
