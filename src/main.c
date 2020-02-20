@@ -65,14 +65,14 @@ static int parse_options(struct ceph_options *opts, int argc, char **argv)
 
 static int start_task(void *arg)
 {
-	struct ceph_options *copt = arg;
-	struct ceph_client *c;
+	struct ceph_options *opt = arg;
+	struct ceph_client *client;
 	int ret;
 
-	c = ceph_create_client(copt, NULL);
-	BUG_ON(!c);
+	client = ceph_create_client(opt, NULL);
+	BUG_ON(!client);
 
-	ret = ceph_open_session(c);
+	ret = ceph_open_session(client);
 	printf(">> %s: ceph_open_session()=%d\n", __func__, ret);
 
 	return ret;
@@ -93,10 +93,12 @@ int main(int argc, char **argv)
 	BUG_ON(!copt);
 
 	ret = parse_options(copt, argc, argv);
-	if (ret < 0) {
-		WARN(1, "failed to parse options: %d\n", ret);
+	if (WARN(ret < 0, "failed to parse options: %d\n", ret))
 		return -1;
-	}
+
+	/* Firstly check required options */
+	if (WARN(!copt->num_mon, "no 'mon_addrs' option is provided\n"))
+		return -1;
 
 	task = task_create(start_task, copt);
 	BUG_ON(!task);

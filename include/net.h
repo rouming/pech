@@ -12,6 +12,14 @@
 #include "gfp.h"
 #include "uio.h"
 
+typedef enum {
+	SS_FREE = 0,			/* not allocated		*/
+	SS_UNCONNECTED,			/* unconnected to any socket	*/
+	SS_CONNECTING,			/* in process of connecting	*/
+	SS_CONNECTED,			/* connected to socket		*/
+	SS_DISCONNECTING		/* in process of disconnecting	*/
+} socket_state;
+
 /*
  *	As we do 4.4BSD message passing we use a 4.4BSD message passing
  *	system, not 4.3. Thus msg_accrights(len) are now missing. They

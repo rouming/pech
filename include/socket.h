@@ -3,6 +3,7 @@
 #define _SOCKET_H
 
 #include "net.h"
+#include "event.h"
 
 
 /* Historically, SOCKWQ_ASYNC_NOSPACE & SOCKWQ_ASYNC_WAITDATA were located
@@ -41,16 +42,16 @@ struct sock {
 };
 
 struct socket {
-	struct sock *sk;
-	unsigned long flags;
+	struct event_item      ev;
+	struct sock            *sk;
+	struct sock            __sk;
+	unsigned long          flags;
+	int                    state;
 	const struct proto_ops *ops;
+	int                    fd;
 };
 
-static inline bool sk_stream_is_writeable(const struct sock *sk)
-{
-	//XXX
-	return false;
-}
+extern bool sk_stream_is_writeable(const struct sock *sk);
 
 extern ssize_t sock_no_sendpage(struct socket *sock, struct page *page,
 				int offset, size_t size, int flags);
