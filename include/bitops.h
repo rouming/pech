@@ -25,18 +25,18 @@ static inline int test_bit(int nr, const volatile unsigned long *addr)
 static inline void set_bit(unsigned int nr, volatile unsigned long *p)
 {
 	p += BIT_WORD(nr);
-	__atomic_or_fetch(p, BIT_MASK(nr), __ATOMIC_ACQ_REL);
+	*p |= BIT_MASK(nr);
 }
 
 static inline void clear_bit(unsigned int nr, volatile unsigned long *p)
 {
-	__atomic_nand_fetch(p, BIT_MASK(nr), __ATOMIC_ACQ_REL);
+	*p &= ~BIT_MASK(nr);
 }
 
 static inline void change_bit(unsigned int nr, volatile unsigned long *p)
 {
 	p += BIT_WORD(nr);
-	__atomic_xor_fetch(p, BIT_MASK(nr), __ATOMIC_ACQ_REL);
+	*p ^= BIT_MASK(nr);
 }
 
 static inline int test_and_set_bit(unsigned int nr, volatile unsigned long *p)
@@ -48,7 +48,9 @@ static inline int test_and_set_bit(unsigned int nr, volatile unsigned long *p)
 	if (READ_ONCE(*p) & mask)
 		return 1;
 
-	old = __atomic_fetch_or(p, mask, __ATOMIC_ACQ_REL);
+	old = *p;
+	*p |= mask;
+
 	return !!(old & mask);
 }
 
@@ -61,7 +63,9 @@ static inline int test_and_clear_bit(unsigned int nr, volatile unsigned long *p)
 	if (!(READ_ONCE(*p) & mask))
 		return 0;
 
-	old = __atomic_fetch_nand(p, mask, __ATOMIC_ACQ_REL);
+	old = *p;
+	*p &= ~mask;
+
 	return !!(old & mask);
 }
 
@@ -71,7 +75,9 @@ static inline int test_and_change_bit(unsigned int nr, volatile unsigned long *p
 	unsigned long mask = BIT_MASK(nr);
 
 	p += BIT_WORD(nr);
-	old = __atomic_fetch_xor(p, mask, __ATOMIC_ACQ_REL);
+	old = *p;
+	*p ^= mask;
+
 	return !!(old & mask);
 }
 

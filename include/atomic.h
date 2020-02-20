@@ -30,7 +30,7 @@ typedef struct {
  */
 static inline int atomic_read(const atomic_t *v)
 {
-	return READ_ONCE((v)->counter);
+	return v->counter;
 }
 
 /**
@@ -42,7 +42,7 @@ static inline int atomic_read(const atomic_t *v)
  */
 static inline void atomic_set(atomic_t *v, int i)
 {
-	WRITE_ONCE(v->counter, i);
+	v->counter = i;
 }
 
 /**
@@ -53,22 +53,26 @@ static inline void atomic_set(atomic_t *v, int i)
  */
 static inline void atomic_inc(atomic_t *v)
 {
-	__sync_add_and_fetch(&v->counter, 1);
+	v->counter++;
 }
 
 static inline int atomic_inc_return(atomic_t *v)
 {
-	return __sync_add_and_fetch(&v->counter, 1);
+	return ++v->counter;
 }
 
 static inline int atomic_fetch_add_relaxed(int i, atomic_t *v)
 {
-	return __atomic_fetch_add(&v->counter, i, __ATOMIC_RELAXED);
+	int old = v->counter;
+	v->counter += i;
+	return old;
 }
 
 static inline int atomic_fetch_sub_release(int i, atomic_t *v)
 {
-	return __atomic_fetch_sub(&v->counter, i, __ATOMIC_RELEASE);
+	int old = v->counter;
+	v->counter -= i;
+	return old;
 }
 
 /**
@@ -81,27 +85,25 @@ static inline int atomic_fetch_sub_release(int i, atomic_t *v)
  */
 static inline int atomic_dec_and_test(atomic_t *v)
 {
-	return __sync_sub_and_fetch(&v->counter, 1) == 0;
+	return (--v->counter == 0);
 }
-
-#define cmpxchg(ptr, oldval, newval) \
-	__sync_val_compare_and_swap(ptr, oldval, newval)
-
-#define xchg(ptr, val) \
-	__atomic_exchange_n(ptr, val, __ATOMIC_ACQ_REL)
 
 static inline int atomic_cmpxchg(atomic_t *v, int oldval, int newval)
 {
-	return cmpxchg(&(v)->counter, oldval, newval);
+	int old = v->counter;
+	if (old == oldval)
+		v->counter = newval;
+	return old;
 }
 
 static inline int atomic_xchg(atomic_t *v, int val)
 {
-	return xchg(&(v)->counter, val);
+	int old = v->counter;
+	v->counter = val;
+	return old;
 }
 
-static __always_inline bool
-atomic_try_cmpxchg_relaxed(atomic_t *v, int *old, int new)
+static inline bool atomic_try_cmpxchg_relaxed(atomic_t *v, int *old, int new)
 {
 	int r, o = *old;
 	r = atomic_cmpxchg(v, o, new);
