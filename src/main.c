@@ -70,10 +70,14 @@ static int start_task(void *arg)
 	int ret;
 
 	client = ceph_create_client(opt, NULL);
-	BUG_ON(!client);
+	BUG_ON(IS_ERR(client));
 
 	ret = ceph_open_session(client);
-	printf(">> %s: ceph_open_session()=%d\n", __func__, ret);
+	BUG_ON(ret);
+
+	printf("Ceph session opened!\n");
+
+	ceph_destroy_client(client);
 
 	return ret;
 }
