@@ -1,0 +1,37 @@
+I found more comfortable to hack Ceph, analysing protocol
+implementation, monitor and OSD client code reading linux kernel
+sources, instead of legacy OSD C++ code or (god forbid!)  Crimson
+project.
+
+Here, in this sources, the level of craziness is above all permissible
+norms: I took (almost) all Ceph sources from net/ceph/ kernel path and
+build them in userspace as a simple OSD which has a perfect name `Pech`
+(Germans speakers will understand).
+
+I do not use threads, I use cooperative scheduling and jump from task
+contexts using makecontext() and swapcontext() calls. This model
+perfectly fits UP kernel with disabled preemption, thus adapted
+workqueue.c and timer.c code runs the event loop.
+
+So again, no pthreads, no atomic operations, no mutexes, everything is
+one thread, which acts as a CPU.  In future would be great to run
+several event loops from each pthread pinned to physical CPU, but
+still keeping same simple and fast model: those threads do not iteract
+with each other.
+
+Make:
+
+  $ make
+
+Start Ceph monitor(s) with auth=none:
+
+  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=0 MGR=0 ../src/vstart.sh -X
+
+Start Pech accessing monitor using v1 protocol:
+
+  $ ./pech mon_addrs=ip.ip.ip.ip:50001
+
+Have fun!
+
+--
+Roman
