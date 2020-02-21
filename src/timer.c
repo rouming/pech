@@ -102,6 +102,19 @@ static void timer_ins(struct timer *timer)
 	}
 }
 
+/**
+ * timer_add - start a timer
+ * @timer: the timer to be added
+ *
+ * The event loop will do a ->action(@timer) callback at the ->expires
+ * point in the future. The current time is 'jiffies'.
+ *
+ * The timer's ->expires, ->action fields must be set prior calling this
+ * function.
+ *
+ * Timers with an ->expires field in the past will be executed in the next
+ * event loop run.
+ */
 void timer_add(struct timer *timer, unsigned long jexpire, timer_func_t func)
 {
 	INIT_LIST_HEAD(&timer->list);
@@ -112,6 +125,17 @@ void timer_add(struct timer *timer, unsigned long jexpire, timer_func_t func)
 	timer_ins(timer);
 }
 
+/**
+ * timer_del - deactivate a timer.
+ * @timer: the timer to be deactivated
+ *
+ * timer_del() deactivates a timer - this works on both active and inactive
+ * timers.
+ *
+ * The function returns whether it has deactivated a pending timer or not.
+ * (ie. timer_del() of an inactive timer returns 0, timer_del() of an
+ * active timer returns 1.)
+ */
 bool timer_del(struct timer *timer)
 {
 	struct timer *next;
@@ -136,14 +160,22 @@ bool timer_del(struct timer *timer)
 	return true;
 }
 
+/**
+ * timer_mod - modify a timer's timeout
+ * @timer: the timer to be modified
+ * @jexpire: new timeout in jiffies
+ *
+ * The function returns whether it has modified a pending timer or not.
+ * (ie. timer_mod() of an inactive timer returns 0, timer_mod() of an
+ * active timer returns 1.)
+ */
 bool timer_mod(struct timer *timer, unsigned long jexpire)
 {
 	bool del;
 
 	del = timer_del(timer);
-	if (!del)
-		return false;
-
 	timer->expire = jexpire;
 	timer_ins(timer);
+
+	return del;
 }
