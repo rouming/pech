@@ -29,8 +29,6 @@
  */
 void complete(struct completion *x)
 {
-	unsigned long flags;
-
 	if (x->done != UINT_MAX)
 		x->done++;
 	__wake_up_locked(&x->wait, TASK_NORMAL, 1);
@@ -55,8 +53,6 @@ EXPORT_SYMBOL(complete);
  */
 void complete_all(struct completion *x)
 {
-	unsigned long flags;
-
 	x->done = UINT_MAX;
 	__wake_up_locked(&x->wait, TASK_NORMAL, 0);
 }
@@ -262,7 +258,6 @@ EXPORT_SYMBOL(wait_for_completion_killable_timeout);
  */
 bool try_wait_for_completion(struct completion *x)
 {
-	unsigned long flags;
 	bool ret = true;
 
 	/*
@@ -293,8 +288,6 @@ EXPORT_SYMBOL(try_wait_for_completion);
  */
 bool completion_done(struct completion *x)
 {
-	unsigned long flags;
-
 	if (!READ_ONCE(x->done))
 		return false;
 

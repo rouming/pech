@@ -21,7 +21,7 @@ extern struct page empty_zero_page;
 #define page_address(p) ((p)->ptr)
 
 #define kmap(p) ((p)->ptr)
-#define kunmap(p)
+#define kunmap(p) ((void)p)
 
 #define kmap_atomic(p) ((p)->ptr)
 #define kunmap_atomic(addr)

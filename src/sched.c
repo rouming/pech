@@ -258,7 +258,6 @@ long schedule_timeout(long timeout)
 		.task = current
 	};
 	unsigned long expire;
-	int ret;
 
 	expire = jiffies + timeout;
 

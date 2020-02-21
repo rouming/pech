@@ -4,13 +4,13 @@
 
 struct rw_semaphore {};
 
-#define init_rwsem(sem)
-#define up_read(sem)
-#define down_read(sem)
-#define down_write(sem)
-#define up_write(sem)
+#define init_rwsem(sem) ((void)sem)
+#define up_read(sem) ((void)sem)
+#define down_read(sem) ((void)sem)
+#define down_write(sem) ((void)sem)
+#define up_write(sem) ((void)sem)
 #define rwsem_is_locked(sem) (0)
-#define downgrade_write(sem)
+#define downgrade_write(sem) ((void)sem)
 #define down_read_trylock(...) (1)
 
 #endif

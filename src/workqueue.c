@@ -356,11 +356,8 @@ static void process_scheduled_works(struct worker *worker)
 
 static int worker_thread(void *arg)
 {
-	struct worker *collision, *worker = arg;
+	struct worker *worker = arg;
 	struct worker_pool *pool = worker->pool;
-	struct work_struct *work;
-
-	struct workqueue_struct *wq;
 
 repeat:
 	worker_leave_idle(worker);
@@ -475,11 +472,11 @@ struct workqueue_struct *alloc_workqueue(const char *fmt,
 					 unsigned int flags,
 					 int max_active, ...)
 {
-	(void)fmt;
-	(void)flags;
-
 	struct worker_pool *pool = &worker_pool;
 	struct workqueue_struct *wq;
+
+	(void)fmt;
+	(void)flags;
 
 	wq = calloc(1, sizeof(*wq));
 	if (wq) {
@@ -718,8 +715,6 @@ static bool prepare_work(struct workqueue_struct *wq,
 bool queue_work(struct workqueue_struct *wq,
 		struct work_struct *work)
 {
-	struct worker_pool *pool = &worker_pool;
-
 	if (!prepare_work(wq, work))
 		return false;
 

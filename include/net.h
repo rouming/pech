@@ -45,6 +45,10 @@ int in_pton(int af, const char *src, int srclen, u8 *dst,
 
 	(void)delim;
 
+	if (end)
+		/* Shut up the gcc */
+		*end = NULL;
+
 	if ((port = strchr(src, ':')))
 		srclen = min(srclen, (int)(port - src));
 	src_dup = strndup(src, srclen);

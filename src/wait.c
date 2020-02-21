@@ -15,8 +15,6 @@ void init_waitqueue_head(struct wait_queue_head *wq_head)
 
 void add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	unsigned long flags;
-
 	wq_entry->flags &= ~WQ_FLAG_EXCLUSIVE;
 	__add_wait_queue(wq_head, wq_entry);
 }
@@ -24,8 +22,6 @@ EXPORT_SYMBOL(add_wait_queue);
 
 void add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	unsigned long flags;
-
 	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
 	__add_wait_queue_entry_tail(wq_head, wq_entry);
 }
@@ -33,8 +29,6 @@ EXPORT_SYMBOL(add_wait_queue_exclusive);
 
 void remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	unsigned long flags;
-
 	__remove_wait_queue(wq_head, wq_entry);
 }
 EXPORT_SYMBOL(remove_wait_queue);
@@ -100,7 +94,6 @@ static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int mode,
 			int nr_exclusive, int wake_flags, void *key)
 {
-	unsigned long flags;
 	wait_queue_entry_t bookmark;
 
 	bookmark.flags = 0;
@@ -221,8 +214,6 @@ EXPORT_SYMBOL_GPL(__wake_up_sync);	/* For internal use only */
 void
 prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
 {
-	unsigned long flags;
-
 	wq_entry->flags &= ~WQ_FLAG_EXCLUSIVE;
 	if (list_empty(&wq_entry->entry))
 		__add_wait_queue(wq_head, wq_entry);
@@ -233,8 +224,6 @@ EXPORT_SYMBOL(prepare_to_wait);
 void
 prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
 {
-	unsigned long flags;
-
 	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
 	if (list_empty(&wq_entry->entry))
 		__add_wait_queue_entry_tail(wq_head, wq_entry);
@@ -253,7 +242,6 @@ EXPORT_SYMBOL(init_wait_entry);
 
 long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
 {
-	unsigned long flags;
 	long ret = 0;
 
 	if (signal_pending_state(state, current)) {
@@ -333,8 +321,6 @@ EXPORT_SYMBOL(do_wait_intr_irq);
  */
 void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	unsigned long flags;
-
 	__set_current_state(TASK_RUNNING);
 	/*
 	 * We can check for list emptiness outside the lock

@@ -23,9 +23,9 @@
 
 static inline void *kmemdup(const void *buf, size_t len, unsigned long flags)
 {
-	(void)flags;
 	void *copy;
 
+	(void)flags;
 	copy = malloc(len);
 	if (!copy)
 		return NULL;
@@ -35,10 +35,10 @@ static inline void *kmemdup(const void *buf, size_t len, unsigned long flags)
 }
 
 #define memalloc_noio_save() (0)
-#define memalloc_noio_restore(v)
+#define memalloc_noio_restore(v) ((void)v)
 
 #define memalloc_nofs_save() (0)
-#define memalloc_nofs_restore(v)
+#define memalloc_nofs_restore(v) ((void)v)
 
 struct kmem_cache {
 	const char * name;

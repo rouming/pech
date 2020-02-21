@@ -72,7 +72,6 @@ static __thread struct event_task_struct event_struct = {
 void init_event(void)
 {
 	struct task_struct *task;
-	struct epoll_event ev;
 
 	BUG_ON(event_struct.epollfd >= 0);
 

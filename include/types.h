@@ -588,7 +588,7 @@ static inline u64 div_u64(u64 dividend, u32 divisor)
  * This is defined the same way as ffs.
  * Note fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
  */
-#define __fls(x) (!(x) ?: sizeof(x) * 8 - __builtin_clz(x))
+#define __fls(x) (!(x) ? 0 : sizeof(x) * 8 - __builtin_clz(x))
 #define fls(x)   __fls(x)
 #define fls64(x) __fls(x)
 #define fls_long(x) __fls(x)
