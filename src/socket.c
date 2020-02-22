@@ -289,8 +289,18 @@ int sock_sendmsg(struct socket *sock, struct kmsghdr *kmsg)
 	int ret;
 
 	ret = sendmsg(sock->fd, &msg, 0);
-	if (unlikely(ret < 0))
+	if (unlikely(ret < 0)) {
 		ret = -errno;
+		if (ret == -EAGAIN) {
+			int err;
+
+			/* Enable further out events */
+			set_bit(SOCK_NOSPACE, &sock->flags);
+			sock->ev.events |= EPOLLOUT;
+			err = event_item_mod(&sock->ev);
+			WARN(err, "event_item_mod(): err=%d\n", err);
+		}
+	}
 
 	return ret;
 }
