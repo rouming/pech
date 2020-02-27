@@ -148,6 +148,10 @@ typedef unsigned int __bitwise slab_flags_t;
 #define be32_to_cpu(x)  be32toh(x)
 #define be16_to_cpu(x)  be16toh(x)
 
+#define cpu_to_be64(x)  htobe64(x)
+#define cpu_to_be32(x)  htobe32(x)
+#define cpu_to_be16(x)  htobe16(x)
+
 #define EXPORT_SYMBOL(x)
 #define EXPORT_SYMBOL_GPL(x)
 #define MODULE_AUTHOR(x);
