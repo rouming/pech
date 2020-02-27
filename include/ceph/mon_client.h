@@ -146,6 +146,8 @@ int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 			    struct ceph_entity_addr *client_addr);
 int ceph_monc_osd_to_crush_add(struct ceph_mon_client *monc,
                                int osd_id, const char *weight);
+int ceph_monc_osd_boot(struct ceph_mon_client *monc, int osd_id,
+                       struct ceph_fsid *osd_fsid);
 
 extern int ceph_monc_open_session(struct ceph_mon_client *monc);
 

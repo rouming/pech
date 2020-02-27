@@ -151,6 +151,8 @@ struct ceph_dir_layout {
 #define CEPH_MSG_WATCH_NOTIFY           44
 #define CEPH_MSG_OSD_BACKOFF            61
 
+/* osd internal */
+#define CEPH_MSG_OSD_BOOT               71
 
 /* watch-notify operations */
 enum {
@@ -218,6 +220,49 @@ struct ceph_mon_subscribe_ack {
 	__le32 duration;         /* seconds */
 	struct ceph_fsid fsid;
 } __attribute__ ((packed));
+
+struct ceph_struct_version {
+	__u8             struct_v;
+	__u8             struct_compat;
+	__u32            struct_len;
+} __attribute__((packed));
+
+struct ceph_osd_superblock {
+	struct ceph_struct_version
+	                 struct_version;
+	struct ceph_fsid cluster_fsid;
+	__le32           whoami;
+	__le32           current_epoch;
+	__le32           oldest_map_epoch;
+	__le32           newest_map_epoch;
+	__le64           weight; /* double */
+	struct {
+		struct {
+			__le64   mask;
+			__le32   names_sz; /* always 0 */
+		} __attribute__((packed))
+			 compat,
+			 ro_compat,
+			 incompat;
+	}                compat_features;
+	__le32           clean_thru_epoch;
+	__le32           mounted_epoch;
+	struct ceph_fsid osd_fsid;
+	__le32           notused_last_epoch_marked_full; /* always 0 */
+	struct {
+		__le32   sz; /* always 0 */
+	}                notused_pool_last_epoch_marked_full_map;
+	__le32           purged_snaps_last_epoch;
+	struct {
+		__le32   tv_sec;
+		__le32   tv_nsec;
+	}                last_purged_snaps_scrub;
+} __attribute__((packed));
+
+struct ceph_osd_boot {
+	struct ceph_mon_request_header monhdr;
+	struct ceph_osd_superblock     sb;
+} __attribute__((packed));
 
 #define CEPH_FS_CLUSTER_ID_NONE  -1
 

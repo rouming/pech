@@ -1007,6 +1007,99 @@ int ceph_monc_osd_to_crush_add(struct ceph_mon_client *monc,
 }
 EXPORT_SYMBOL(ceph_monc_osd_to_crush_add);
 
+int ceph_monc_osd_boot(struct ceph_mon_client *monc, int osd_id,
+		       struct ceph_fsid *osd_fsid)
+{
+	struct ceph_osd_boot *cmd, osd_boot_cmd = {
+		.monhdr = {
+			.have_version    = cpu_to_le64(monc->monmap->epoch),
+			.session_mon     = cpu_to_le16(-1),
+			.session_mon_tid = 0,
+		},
+		.sb = {
+			.struct_version = {
+				.struct_v      = 9,
+				.struct_compat = 5,
+				.struct_len    = cpu_to_le32(
+					sizeof(osd_boot_cmd.sb) -
+					sizeof(osd_boot_cmd.sb.struct_version))
+			},
+			.cluster_fsid          = monc->monmap->fsid,
+			.whoami                = cpu_to_le32(osd_id),
+			.osd_fsid              = *osd_fsid,
+		},
+	};
+
+	struct ceph_mon_generic_request *req;
+	void *p, *end;
+
+	/* XXX */
+	struct ceph_entity_addr hb_back_addr = {
+		.in_addr.ss_family = AF_INET
+	};
+	struct ceph_entity_addr hb_front_addr = {
+		.in_addr.ss_family = AF_INET
+	};
+	struct ceph_entity_addr cluster_addr = {
+		.in_addr.ss_family = AF_INET
+	};
+	int ret = -ENOMEM;
+
+	req = alloc_generic_request(monc, GFP_NOIO);
+	if (!req)
+		goto out;
+
+	req->request = ceph_msg_new(CEPH_MSG_OSD_BOOT, 512,
+				    GFP_NOIO, true);
+	if (!req->request)
+		goto out;
+
+	cmd = req->request->front.iov_base;
+	*cmd = osd_boot_cmd;
+
+	p = cmd + 1;
+	end = p + req->request->front_alloc_len - sizeof(*cmd);
+
+	if (CEPH_HAVE_FEATURE(monc->con.peer_features, SERVER_NAUTILUS)) {
+		req->request->hdr.version        = cpu_to_le16(7);
+		req->request->hdr.compat_version = cpu_to_le16(7);
+
+	} else {
+		/* Compat path */
+		req->request->hdr.version        = cpu_to_le16(6);
+		req->request->hdr.compat_version = cpu_to_le16(6);
+	}
+
+	ceph_encode_single_entity_addrvec(&p, end, &hb_back_addr,
+					  monc->con.peer_features);
+	ceph_encode_single_entity_addrvec(&p, end, &cluster_addr,
+					  monc->con.peer_features);
+	/* boot_epoch */
+	ceph_encode_32_safe(&p, end, monc->monmap->epoch, bad);
+	ceph_encode_single_entity_addrvec(&p, end, &hb_front_addr,
+					  monc->con.peer_features);
+	/* metadata map which size is 0  */
+	ceph_encode_32_safe(&p, end, 0, bad);
+	/* osd_features */
+	ceph_encode_64_safe(&p, end, CEPH_FEATURES_ALL, bad);
+
+	mutex_lock(&monc->mutex);
+	set_tid_generic_request(req);
+	send_generic_request(monc, req);
+	mutex_unlock(&monc->mutex);
+	ret = 0;
+out:
+	put_generic_request(req);
+	return ret;
+
+bad:
+	WARN(1, "Small buffer size?\n");
+	put_generic_request(req);
+	ret = -EINVAL;
+	goto out;
+}
+EXPORT_SYMBOL(ceph_monc_osd_boot);
+
 /*
  * Resend pending generic requests.
  */
