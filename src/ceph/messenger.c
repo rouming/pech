@@ -3189,8 +3189,13 @@ void ceph_msg_revoke(struct ceph_msg *msg)
  */
 void ceph_msg_revoke_incoming(struct ceph_msg *msg)
 {
-	struct ceph_connection *con = msg->con;
+	struct ceph_connection *con;
 
+	if (!msg) {
+		dout("%s null msg \n", __func__);
+		return;
+	}
+	con = msg->con;
 	if (!con) {
 		dout("%s msg %p null con\n", __func__, msg);
 		return;		/* Message not in our possession */

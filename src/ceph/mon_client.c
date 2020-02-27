@@ -553,6 +553,13 @@ alloc_generic_request(struct ceph_mon_client *monc, gfp_t gfp)
 	return req;
 }
 
+static void set_tid_generic_request(struct ceph_mon_generic_request *req)
+{
+	struct ceph_mon_client *monc = req->monc;
+
+	req->tid = ++monc->last_tid;
+}
+
 static void register_generic_request(struct ceph_mon_generic_request *req)
 {
 	struct ceph_mon_client *monc = req->monc;
@@ -560,7 +567,7 @@ static void register_generic_request(struct ceph_mon_generic_request *req)
 	WARN_ON(req->tid);
 
 	get_generic_request(req);
-	req->tid = ++monc->last_tid;
+	set_tid_generic_request(req);
 	insert_generic_request(&monc->generic_request_tree, req);
 }
 
@@ -649,8 +656,13 @@ static struct ceph_msg *get_generic_reply(struct ceph_connection *con,
 		m = NULL;
 	} else {
 		dout("get_generic_reply %lld got %p\n", tid, req->reply);
-		*skip = 0;
-		m = ceph_msg_get(req->reply);
+		if (req->reply) {
+			*skip = 0;
+			m = ceph_msg_get(req->reply);
+		} else {
+			*skip = 1;
+			m = NULL;
+		}
 		/*
 		 * we don't need to track the connection reading into
 		 * this reply because we only have one open connection
