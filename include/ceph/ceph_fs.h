@@ -153,6 +153,7 @@ struct ceph_dir_layout {
 
 /* osd internal */
 #define CEPH_MSG_OSD_BOOT               71
+#define CEPH_MSG_OSD_MARK_ME_DOWN       74
 
 /* watch-notify operations */
 enum {
@@ -262,6 +263,11 @@ struct ceph_osd_superblock {
 struct ceph_osd_boot {
 	struct ceph_mon_request_header monhdr;
 	struct ceph_osd_superblock     sb;
+} __attribute__((packed));
+
+struct ceph_osd_mark_me_down {
+	struct ceph_mon_request_header monhdr;
+	struct ceph_fsid               fsid;
 } __attribute__((packed));
 
 #define CEPH_FS_CLUSTER_ID_NONE  -1

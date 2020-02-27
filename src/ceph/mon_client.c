@@ -1100,6 +1100,89 @@ bad:
 }
 EXPORT_SYMBOL(ceph_monc_osd_boot);
 
+int ceph_monc_osd_mark_me_down(struct ceph_mon_client *monc, int osd_id)
+{
+	struct ceph_osd_mark_me_down *cmd, osd_mark_me_down_cmd = {
+		.monhdr = {
+			.have_version    = cpu_to_le64(monc->monmap->epoch),
+			.session_mon     = cpu_to_le16(-1),
+			.session_mon_tid = 0,
+		},
+		.fsid = monc->monmap->fsid,
+	};
+
+	struct ceph_mon_generic_request *req;
+	void *p, *end;
+
+	int ret = -ENOMEM;
+
+	req = alloc_generic_request(monc, GFP_NOIO);
+	if (!req)
+		goto out;
+
+	req->request = ceph_msg_new(CEPH_MSG_OSD_MARK_ME_DOWN, 256,
+				    GFP_NOIO, true);
+	if (!req->request)
+		goto out;
+
+	cmd = req->request->front.iov_base;
+	*cmd = osd_mark_me_down_cmd;
+
+	p = cmd + 1;
+	end = p + req->request->front_alloc_len - sizeof(*cmd);
+
+	if (CEPH_HAVE_FEATURE(monc->con.peer_features, SERVER_NAUTILUS)) {
+		int ret;
+
+		req->request->hdr.version        = cpu_to_le16(3);
+		req->request->hdr.compat_version = cpu_to_le16(3);
+
+		ceph_encode_32_safe(&p, end, osd_id, bad);
+		ret = ceph_encode_single_entity_addrvec(&p, end,
+						ceph_client_addr(monc->client),
+						monc->con.peer_features);
+		if (ret)
+			goto bad;
+
+	} else  {
+		/* Compat path */
+
+		req->request->hdr.version        = cpu_to_le16(2);
+		req->request->hdr.compat_version = cpu_to_le16(2);
+
+		/* XXX */
+		BUG();
+
+#if 0
+		encode(entity_inst_t(entity_name_t::OSD(target_osd),
+				     target_addrs.legacy_addr()),
+		       payload, features);
+#endif
+	}
+
+	ceph_encode_32_safe(&p, end, monc->monmap->epoch, bad);
+	/* Request ack */
+	ceph_encode_8_safe(&p, end, 1, bad);
+
+	mutex_lock(&monc->mutex);
+	reinit_completion(&monc->m_osd_marked_down_comp);
+	set_tid_generic_request(req);
+	send_generic_request(monc, req);
+	mutex_unlock(&monc->mutex);
+
+	ret = wait_for_completion_interruptible(&monc->m_osd_marked_down_comp);
+out:
+	put_generic_request(req);
+	return ret;
+
+bad:
+	WARN(1, "Small buffer size?\n");
+	put_generic_request(req);
+	ret = -EINVAL;
+	goto out;
+}
+EXPORT_SYMBOL(ceph_monc_osd_mark_me_down);
+
 /*
  * Resend pending generic requests.
  */
@@ -1243,6 +1326,7 @@ int ceph_monc_init(struct ceph_mon_client *monc, struct ceph_client *cl)
 	monc->had_a_connection = false;
 	monc->hunt_mult = 1;
 
+	init_completion(&monc->m_osd_marked_down_comp);
 	INIT_DELAYED_WORK(&monc->delayed_work, delayed_work);
 	monc->generic_request_tree = RB_ROOT;
 	monc->last_tid = 0;
@@ -1427,6 +1511,13 @@ static void dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 	ceph_msg_put(msg);
 }
 
+static void mon_complete_osd_marked_down(struct ceph_mon_client *monc)
+{
+	mutex_lock(&monc->mutex);
+	complete_all(&monc->m_osd_marked_down_comp);
+	mutex_unlock(&monc->mutex);
+}
+
 /*
  * Allocate memory for incoming message
  */
@@ -1448,6 +1539,10 @@ static struct ceph_msg *mon_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_STATFS_REPLY:
 	case CEPH_MSG_MON_COMMAND_ACK:
 		return get_generic_reply(con, hdr, skip);
+	case CEPH_MSG_OSD_MARK_ME_DOWN:
+		*skip = 1;
+		mon_complete_osd_marked_down(monc);
+		return NULL;
 	case CEPH_MSG_AUTH_REPLY:
 		m = ceph_msg_get(monc->m_auth_reply);
 		break;

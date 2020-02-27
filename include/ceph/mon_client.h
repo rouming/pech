@@ -83,6 +83,7 @@ struct ceph_mon_client {
 	unsigned long sub_renew_after;
 	unsigned long sub_renew_sent;
 	struct ceph_connection con;
+	struct completion m_osd_marked_down_comp;
 
 	bool had_a_connection;
 	int hunt_mult; /* [1..CEPH_MONC_HUNT_MAX_MULT] */
@@ -148,6 +149,7 @@ int ceph_monc_osd_to_crush_add(struct ceph_mon_client *monc,
                                int osd_id, const char *weight);
 int ceph_monc_osd_boot(struct ceph_mon_client *monc, int osd_id,
                        struct ceph_fsid *osd_fsid);
+int ceph_monc_osd_mark_me_down(struct ceph_mon_client *monc, int osd_id);
 
 extern int ceph_monc_open_session(struct ceph_mon_client *monc);
 
