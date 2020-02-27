@@ -84,7 +84,7 @@ void init_event(void)
 	wake_up_process(task);
 }
 
-void stop_event(void)
+void deinit_event(void)
 {
 	event_struct.stopped = true;
 }

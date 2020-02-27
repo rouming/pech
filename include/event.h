@@ -17,7 +17,7 @@ struct event_item {
 	}
 
 extern void init_event(void);
-extern void stop_event(void);
+extern void deinit_event(void);
 
 extern int event_item_add(struct event_item *, int fd);
 extern int event_item_del(struct event_item *);
