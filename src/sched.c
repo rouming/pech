@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <ucontext.h>
+#include <setjmp.h>
 #ifdef _USE_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
@@ -17,7 +18,7 @@
 struct task_struct {
 	struct list_head tsk_list;
 	int         tsk_ref;
-	ucontext_t  tsk_ctx;
+	jmp_buf     tsk_ctx;
 	void	    *tsk_stack;
 	task_func_t *tsk_func;
 	void        *tsk_arg;
@@ -116,8 +117,12 @@ static void put_task_struct(struct task_struct *task)
 
 static void task_switch_to(struct task_struct *from, struct task_struct *to)
 {
+	int is_jmp;
+
 	current = to;
-	swapcontext(&from->tsk_ctx, &to->tsk_ctx);
+	is_jmp = setjmp(from->tsk_ctx);
+	if (!is_jmp)
+		longjmp(to->tsk_ctx, 1);
 }
 
 /* workqueue.c  */
@@ -157,19 +162,39 @@ void schedule(void)
 
 }
 
-union task_ptr {
+union trampoline_ptr {
 	void *p;
-	u32 i[2];
+	u32  i[2];
 };
 
+struct trampoline_arg {
+	jmp_buf            jmp_back;
+	struct task_struct *task;
+};
+
+/*
+ * Here there is a nasty mixture of `ucontext_t` and `jmp_buf`.
+ * Obviously `ucontext_t` should be enough to switch between
+ * tasks, but glibc does rt_sigprocmask() syscall internally.
+ * In order to avoid any extra syscall I decided to use
+ * `jmp_buf`, but the problem is that I need a separate stack
+ * for a new task, but only for `ucontext_t` new stack can be
+ * set, thus for the first time I jump to trampoline using
+ * `ucontext_t` and return back using `jmp_buf`.
+ */
 __attribute__ ((noreturn))
 static void task_trampoline(int i0, int i1)
 {
-	union task_ptr ptr = {
+	union trampoline_ptr ptr = {
 		.i = { i0, i1 }
 	};
-	struct task_struct *task = ptr.p;
-	int ret;
+	struct trampoline_arg *a = ptr.p;
+	struct task_struct *task = a->task;
+	int ret, is_jmp;
+
+	is_jmp = setjmp(task->tsk_ctx);
+	if (!is_jmp)
+		longjmp(a->jmp_back, 1);
 
 	ret = task->tsk_func(task->tsk_arg);
 	task->tsk_exit_code = ret;
@@ -183,25 +208,39 @@ static void task_trampoline(int i0, int i1)
 struct task_struct *task_create(task_func_t *func, void *param)
 {
 	struct task_struct *task;
-	union task_ptr ptr;
+	union trampoline_ptr ptr;
+	struct trampoline_arg arg;
+	ucontext_t oneshot_ctx;
+	int is_jmp;
 
 	task = task_alloc(func, param, TASK_STACK_SIZE);
 	if (unlikely(!task))
 		return NULL;
 
-	if (getcontext(&task->tsk_ctx) == -1)
+	if (getcontext(&oneshot_ctx) == -1)
 		BUG();
-	task->tsk_ctx.uc_stack.ss_sp = task->tsk_stack;
-	task->tsk_ctx.uc_stack.ss_size = TASK_STACK_SIZE;
-	task->tsk_ctx.uc_stack.ss_flags = 0;
-	task->tsk_ctx.uc_link = NULL;
+	oneshot_ctx.uc_stack.ss_sp   = task->tsk_stack;
+	oneshot_ctx.uc_stack.ss_size = TASK_STACK_SIZE;
+	oneshot_ctx.uc_stack.ss_flags = 0;
+	oneshot_ctx.uc_link = NULL;
+
 	task->tsk_state = TASK_IDLE;
 	task->tsk_flags = PF_KTHREAD; /* no other threads here */
 	INIT_LIST_HEAD(&task->tsk_list);
 
-	ptr.p = task;
-	makecontext(&task->tsk_ctx, (void (*)(void))task_trampoline,
+	arg.task = task;
+	ptr.p = &arg;
+
+	/*
+	 * Prepare oneshot context in order to setup stack and everything.
+	 * Used only once and then we return back using `jmp_buf`.
+	 */
+	makecontext(&oneshot_ctx, (void (*)(void))task_trampoline,
 		    2, ptr.i[0], ptr.i[1]);
+
+	is_jmp = setjmp(arg.jmp_back);
+	if (!is_jmp)
+		setcontext(&oneshot_ctx);
 
 	return task;
 }
