@@ -5,7 +5,7 @@
 #include "types.h"
 #include "slab.h"
 #include "random.h"
-//#include <linux/sched.h>
+#include "sched.h"
 
 #include "ceph/ceph_features.h"
 #include "ceph/mon_client.h"
@@ -896,11 +896,17 @@ bad:
 	ceph_msg_dump(msg);
 }
 
-int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
-			    struct ceph_entity_addr *client_addr)
+__printf(2, 3)
+static int ceph_monc_send_command_and_wait(struct ceph_mon_client *monc,
+					   const char *format, ...)
 {
 	struct ceph_mon_generic_request *req;
 	struct ceph_mon_command *h;
+	va_list args;
+
+	/* 256 bytes should be enough */
+	const size_t max_sz = 256;
+
 	int ret = -ENOMEM;
 	int len;
 
@@ -908,7 +914,8 @@ int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 	if (!req)
 		goto out;
 
-	req->request = ceph_msg_new(CEPH_MSG_MON_COMMAND, 256, GFP_NOIO, true);
+	req->request = ceph_msg_new(CEPH_MSG_MON_COMMAND, max_sz, GFP_NOIO,
+				    true);
 	if (!req->request)
 		goto out;
 
@@ -917,23 +924,46 @@ int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 	if (!req->reply)
 		goto out;
 
-	mutex_lock(&monc->mutex);
-	register_generic_request(req);
 	h = req->request->front.iov_base;
 	h->monhdr.have_version = 0;
 	h->monhdr.session_mon = cpu_to_le16(-1);
 	h->monhdr.session_mon_tid = 0;
 	h->fsid = monc->monmap->fsid;
 	h->num_strs = cpu_to_le32(1);
-	len = sprintf(h->str, "{ \"prefix\": \"osd blacklist\", \
-		                 \"blacklistop\": \"add\", \
-				 \"addr\": \"%pISpc/%u\" }",
-		      &client_addr->in_addr, le32_to_cpu(client_addr->nonce));
+
+	va_start(args, format);
+	len = vsnprintf(h->str, max_sz - sizeof(*h), format, args);
+	va_end(args);
 	h->str_len = cpu_to_le32(len);
+
+	if (WARN_ON(len >= max_sz)) {
+		ret = -EOVERFLOW;
+		goto out;
+	}
+
+	mutex_lock(&monc->mutex);
+	register_generic_request(req);
 	send_generic_request(monc, req);
 	mutex_unlock(&monc->mutex);
 
 	ret = wait_generic_request(req);
+out:
+	put_generic_request(req);
+	return ret;
+
+}
+
+int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
+			    struct ceph_entity_addr *client_addr)
+{
+	const char *fmt = "{ \"prefix\": \"osd blacklist\", \
+		             \"blacklistop\": \"add\",	\
+			     \"addr\": \"%pISpc/%u\" }";
+	int ret;
+
+	ret = ceph_monc_send_command_and_wait(monc, fmt,
+					      &client_addr->in_addr,
+					      le32_to_cpu(client_addr->nonce));
 	if (!ret)
 		/*
 		 * Make sure we have the osdmap that includes the blacklist
@@ -943,8 +973,6 @@ int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 		 */
 		ret = ceph_wait_for_latest_osdmap(monc->client, 0);
 
-out:
-	put_generic_request(req);
 	return ret;
 }
 EXPORT_SYMBOL(ceph_monc_blacklist_add);
