@@ -104,12 +104,12 @@ static void task_destroy(struct task_struct *task)
 	free(task);
 }
 
-static void get_task_struct(struct task_struct *task)
+void get_task_struct(struct task_struct *task)
 {
 	task->tsk_ref++;
 }
 
-static void put_task_struct(struct task_struct *task)
+void put_task_struct(struct task_struct *task)
 {
 	if (!--task->tsk_ref)
 		task_destroy(task);
@@ -392,9 +392,9 @@ long __sched io_schedule_timeout(long timeout)
  * and this will return true.  You should then return, and your return
  * value will be passed through to kthread_stop().
  */
-bool kthread_should_stop(void)
+bool kthread_should_stop(struct task_struct *task)
 {
-	return current->tsk_should_stop;
+	return task->tsk_should_stop;
 }
 
 /**

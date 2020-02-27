@@ -49,10 +49,6 @@
 #define PF_WQ_WORKER        0x00000020	/* I'm a workqueue worker */
 #define PF_KTHREAD          0x00200000	/* I am a kernel thread */
 
-/* Do not support signals */
-#define signal_pending_state(...) (0)
-#define signal_pending(...)       (0)
-
 typedef int (task_func_t)(void *arg);
 
 struct task_struct;
@@ -71,12 +67,42 @@ extern void init_sched(void);
 extern struct task_struct *task_create(task_func_t *func, void *param);
 extern unsigned int tasks_to_run(void);
 
-extern bool kthread_should_stop(void);
+extern void get_task_struct(struct task_struct *task);
+extern void put_task_struct(struct task_struct *task);
+
+extern bool kthread_should_stop(struct task_struct *task);
 extern int kthread_stop(struct task_struct *task);
 extern int wake_up_process(struct task_struct *task);
 
 extern void schedule(void);
 extern long schedule_timeout(long timeout);
 extern long io_schedule_timeout(long timeout);
+
+static inline int signal_pending(struct task_struct *p)
+{
+	/* Pretend something is pending if we need to stop a task */
+	return unlikely(kthread_should_stop(p));
+}
+
+static inline int __fatal_signal_pending(struct task_struct *p)
+{
+	/* We do not have normal signals */
+	return 0;
+}
+
+static inline int fatal_signal_pending(struct task_struct *p)
+{
+	return signal_pending(p) && __fatal_signal_pending(p);
+}
+
+static inline int signal_pending_state(long state, struct task_struct *p)
+{
+	if (!(state & (TASK_INTERRUPTIBLE | TASK_WAKEKILL)))
+		return 0;
+	if (!signal_pending(p))
+		return 0;
+
+	return (state & TASK_INTERRUPTIBLE) || __fatal_signal_pending(p);
+}
 
 #endif
