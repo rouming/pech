@@ -7,6 +7,8 @@
 #include "random.h"
 #include "sched.h"
 
+#include <linux/utsname.h>
+
 #include "ceph/ceph_features.h"
 #include "ceph/mon_client.h"
 #include "ceph/libceph.h"
@@ -976,6 +978,22 @@ int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 	return ret;
 }
 EXPORT_SYMBOL(ceph_monc_blacklist_add);
+
+int ceph_monc_osd_to_crush_add(struct ceph_mon_client *monc,
+			       int osd_id, const char *weight)
+{
+	/* FIXME: crush location is hardcoded for now */
+	const char *fmt = "{ \"prefix\": \"osd crush create-or-move\", \
+		             \"id\": %d,  \
+			     \"weight\": %s, \
+			     \"args\": [\"host=%s\", \"root=default\"] }";
+
+	int ret = ceph_monc_send_command_and_wait(monc, fmt, osd_id, weight,
+						  utsname()->nodename);
+
+	return ret;
+}
+EXPORT_SYMBOL(ceph_monc_osd_to_crush_add);
 
 /*
  * Resend pending generic requests.

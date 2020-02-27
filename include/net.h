@@ -3,6 +3,7 @@
 #define _NET_H
 
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -105,5 +106,11 @@ static inline struct net *read_pnet(const possible_net_t *pnet)
 #define get_net(x) NULL
 #define put_net(x)
 #define net_eq(...) 1
+
+/*
+ * Seems not save to return an address of a structure
+ * which leaves the scope, thus static and __thread.
+ */
+#define utsname() ({ static __thread struct utsname uts; uname(&uts); (&uts); })
 
 #endif

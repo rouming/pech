@@ -144,6 +144,8 @@ int ceph_monc_get_version_async(struct ceph_mon_client *monc, const char *what,
 
 int ceph_monc_blacklist_add(struct ceph_mon_client *monc,
 			    struct ceph_entity_addr *client_addr);
+int ceph_monc_osd_to_crush_add(struct ceph_mon_client *monc,
+                               int osd_id, const char *weight);
 
 extern int ceph_monc_open_session(struct ceph_mon_client *monc);
 
