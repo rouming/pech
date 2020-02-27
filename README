@@ -3,35 +3,69 @@ implementation, monitor and OSD client code reading linux kernel
 sources, instead of legacy OSD C++ code or (god forbid!)  Crimson
 project.
 
-Here, in this sources, the level of craziness is above all permissible
+Here, in the sources, the level of craziness is above all permissible
 norms: I took (almost) all Ceph sources from net/ceph/ kernel path and
-build them in userspace as a simple OSD which has a perfect name `Pech`
-(Germans speakers will understand).
+build them in userspace as a simplest OSD possible which has a perfect
+name `Pech` (Germans speakers will understand).
 
 I do not use threads, I use cooperative scheduling and jump from task
-contexts using makecontext() and swapcontext() calls. This model
-perfectly fits UP kernel with disabled preemption, thus adapted
-workqueue.c and timer.c code runs the event loop.
+contexts using setjmp()/longjmp() calls. This model perfectly fits UP
+kernel with disabled preemption, thus adapted workqueue.c and timer.c
+code runs the event loop.
 
-So again, no pthreads, no atomic operations, no mutexes, everything is
-one thread, which acts as a CPU.  In future would be great to run
-several event loops from each pthread pinned to physical CPU, but
-still keeping same simple and fast model: those threads do not iteract
-with each other.
+So again, no atomic operations, no locks, everything is one thread.
+In future number of event loops can be equal to a number of physical
+CPUs, where each event loop is executed from a dedicated pthread
+context and pinned to a particular CPU.
+
+What this noop OSD does?
+
+  o Connects to monitors and "boots" OSD, i.e. marks it as UP.
+  o On Ctrl+C marks OSD on monitors as DOWN and gracefully exits.
+
+What is not yet ported from kernel sources?
+
+  o Crypto part is noop, thus monitors should be run with auth=none.
+    To make cephx work direct copy-paste of kernel crypto sources
+	has to be done, or a wrapper over openssl lib should be written,
+	see src/ceph/crypto.c interface stubs for details.
+
+What is the Great Idea behind?
+
+  o I need easy hackable OSD in C with IO path only, without failover,
+    log-based replication, PG layer and all other things. I want to
+	test different replication strategies (client-based, primary-copy,
+	chain) having simplest and fastest file storage (yes, step back to
+	filestore) which reads and writes directly to files.
+
+    Eventually this Pech OSD can be a starting point to something
+	different, something which is not RADOS, which is fast, with
+	minimum IO ordering requirements and acts as a RAID 1 cluster,
+	e.g. something which is described here [1].
 
 Make:
 
-  $ make
+  $ make -j8
 
-Start Ceph monitor(s) with auth=none:
+Start new Ceph cluster with 1 OSD and then stop everything.  We start
+monitors on specified port and witg -X option, i.e. auth=none.
 
-  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=0 MGR=0 ../src/vstart.sh -X
+  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=1 MGR=0 ../src/vstart.sh --memstore -n -X
+  $ ../src/stop.sh
 
-Start Pech accessing monitor using v1 protocol:
+Restart only Ceph monitor(s):
 
-  $ ./pech mon_addrs=ip.ip.ip.ip:50001
+  $ MON=1 MDS=0 OSD=0 MGR=0 ../src/vstart.sh
+
+Start pech-osd accessing monitor over v1 protocol:
+
+  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` log_level=5
+
+For DEBUG purposes maximum output log level can be specified: log_level=7
 
 Have fun!
 
 --
 Roman
+
+[1] https://lists.ceph.io/hyperkitty/list/dev@ceph.io/thread/N46NR7NBHWBQL4B2ASU7Y2LMKZZPK3IX/
