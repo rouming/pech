@@ -2663,3 +2663,12 @@ int ceph_pg_to_acting_primary(struct ceph_osdmap *osdmap,
 	return acting.primary;
 }
 EXPORT_SYMBOL(ceph_pg_to_acting_primary);
+
+/*
+ * return true if *addr is included in the osdmap.
+ */
+int ceph_osdmap_contains(struct ceph_osdmap *m, int osd,
+                         struct ceph_entity_addr *addr)
+{
+	return !memcmp(addr, ceph_osd_addr(m, osd), sizeof(*addr));
+}

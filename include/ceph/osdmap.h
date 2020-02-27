@@ -305,4 +305,7 @@ extern struct ceph_pg_pool_info *ceph_pg_pool_by_id(struct ceph_osdmap *map,
 extern const char *ceph_pg_pool_name_by_id(struct ceph_osdmap *map, u64 id);
 extern int ceph_pg_poolid_by_name(struct ceph_osdmap *map, const char *name);
 
+extern int ceph_osdmap_contains(struct ceph_osdmap *m, int osd,
+                                struct ceph_entity_addr *addr);
+
 #endif
