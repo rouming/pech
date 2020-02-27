@@ -34,7 +34,7 @@ ifneq ($(VERBOSE),1)
 endif
 	$(Q)$(CC) -c -o $@ $< $(CFLAGS)
 
-pech: $(OBJ)
+pech-osd: $(OBJ)
 ifneq ($(VERBOSE),1)
 	@echo LD $@
 endif
@@ -43,5 +43,5 @@ endif
 .PHONY: clean
 
 clean:
-	$(Q)rm -f pech core
+	$(Q)rm -f pech-osd core
 	$(Q)find src \( -name \*.o -or -name \*.c~ \) -delete
