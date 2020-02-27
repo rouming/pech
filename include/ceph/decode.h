@@ -387,6 +387,21 @@ bad:
 		ceph_encode_need(p, end, n, bad);		\
 		ceph_encode_string(p, end, s, n);		\
 	} while (0)
+#define ceph_encode_skip_n(p, end, n, bad)			\
+	do {							\
+		ceph_encode_need(p, end, n, bad);		\
+                *p += n;					\
+	} while (0)
+#define ceph_start_encoding_safe(p, end, st_v, st_compat, st_len, bad)	\
+	do {							\
+		ceph_encode_8_safe(p, end, st_v, bad);		\
+		ceph_encode_8_safe(p, end, st_compat, bad);	\
+		*st_len = *p;					\
+		ceph_encode_skip_n(p, end, 4, bad);		\
+	} while (0)
 
+extern int ceph_encode_single_entity_addrvec(void **p, void *end,
+					     struct ceph_entity_addr *addr,
+					     uint64_t features);
 
 #endif

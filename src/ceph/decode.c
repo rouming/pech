@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include "ceph/decode.h"
+#include "ceph/ceph_features.h"
 
 static int
 ceph_decode_entity_addr_versioned(void **p, void *end,
@@ -82,3 +83,94 @@ bad:
 }
 EXPORT_SYMBOL(ceph_decode_entity_addr);
 
+static size_t
+ceph_get_sockaddr_len(struct ceph_entity_addr *addr)
+{
+	switch (addr->in_addr.ss_family) {
+	case AF_INET:
+		return sizeof(struct sockaddr_in);
+	case AF_INET6:
+		return sizeof(struct sockaddr_in6);
+	}
+	return sizeof(addr->in_addr);
+}
+
+static void ceph_copy_sock_addr(struct sockaddr_storage *in_addr,
+				const struct ceph_entity_addr *addr)
+{
+	BUILD_BUG_ON(sizeof(*in_addr) != sizeof(addr->in_addr));
+	memcpy(in_addr, &addr->in_addr, sizeof(*in_addr));
+}
+
+static int
+ceph_encode_entity_addr_versioned(void **p, void *end,
+				  struct ceph_entity_addr *addr)
+{
+	struct sockaddr_storage in_addr;
+	u32 type, addr_len, *struct_len;
+	void *start;
+
+	int ret = -EINVAL;
+
+	/* Marker */
+	ceph_encode_8_safe(p, end, 1, bad);
+	ceph_start_encoding_safe(p, end, 1, 1, &struct_len, bad);
+	start = *p;
+
+	type = CEPH_ENTITY_ADDR_TYPE_LEGACY;
+	ceph_encode_copy_safe(p, end, &type, sizeof(type), bad);
+	ceph_encode_copy_safe(p, end, &addr->nonce, sizeof(addr->nonce), bad);
+
+	addr_len = ceph_get_sockaddr_len(addr);
+	ceph_encode_32_safe(p, end, addr_len, bad);
+
+	ceph_copy_sock_addr(&in_addr, addr);
+	ceph_encode_copy_safe(p, end, &in_addr, addr_len, bad);
+
+	/* Finalize structure size */
+	*struct_len = *p - start;
+
+	ret = 0;
+bad:
+	return ret;
+}
+
+static int
+ceph_encode_entity_addr_legacy(void **p, void *end,
+			       struct ceph_entity_addr *addr)
+{
+	struct sockaddr_storage in_addr;
+	int ret = -EINVAL;
+
+	ceph_encode_32_safe(p, end, 0, bad);
+	ceph_encode_copy_safe(p, end, &addr->nonce, sizeof(addr->nonce), bad);
+	ceph_copy_sock_addr(&in_addr, addr);
+	ceph_encode_copy_safe(p, end, &in_addr, sizeof(in_addr), bad);
+
+	ret = 0;
+bad:
+	return ret;
+}
+
+int
+ceph_encode_single_entity_addrvec(void **p, void *end,
+				  struct ceph_entity_addr *addr,
+				  uint64_t features)
+{
+	int ret = -EINVAL;
+
+	if (!(features & CEPH_FEATURE_MSG_ADDR2))
+		/* Legacy addr */
+		return ceph_encode_entity_addr_legacy(p, end, addr);
+
+	/* Vector addr marker */
+	ceph_encode_8_safe(p, end, 2, bad);
+	/* Vector addr size */
+	ceph_encode_32_safe(p, end, 1, bad);
+	/* Single addr entity */
+	ret = ceph_encode_entity_addr_versioned(p, end, addr);
+
+bad:
+	return ret;
+}
+EXPORT_SYMBOL(ceph_encode_single_entity_addrvec);
