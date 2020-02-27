@@ -3045,17 +3045,24 @@ void ceph_messenger_reset_nonce(struct ceph_messenger *msgr)
  * initialize a new messenger instance
  */
 void ceph_messenger_init(struct ceph_messenger *msgr,
+			 __u8 entity_type, __u64 entity_num,
 			 struct ceph_entity_addr *myaddr)
 {
 	spin_lock_init(&msgr->global_seq_lock);
 
-	if (myaddr)
+	if (myaddr) {
 		msgr->inst.addr = *myaddr;
+	} else {
+		msgr->inst.addr.type = CEPH_ENTITY_ADDR_TYPE_LEGACY;
+		msgr->inst.addr.in_addr.ss_family = AF_INET;
+	}
 
 	/* select a random nonce */
-	msgr->inst.addr.type = 0;
 	get_random_bytes(&msgr->inst.addr.nonce, sizeof(msgr->inst.addr.nonce));
 	encode_my_addr(msgr);
+
+	msgr->inst.name.type = (__u8) entity_type;
+	msgr->inst.name.num = cpu_to_le64(entity_num);
 
 	atomic_set(&msgr->stopping, 0);
 	write_pnet(&msgr->net, get_net(current->nsproxy->net_ns));

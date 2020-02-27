@@ -1180,10 +1180,12 @@ static void handle_auth_reply(struct ceph_mon_client *monc,
 	if (ret < 0) {
 		monc->client->auth_err = ret;
 	} else if (!was_auth && ceph_auth_is_authenticated(monc->auth)) {
+		struct ceph_messenger *msgr = &monc->client->msgr;
+
 		dout("authenticated, starting session\n");
 
-		monc->client->msgr.inst.name.type = CEPH_ENTITY_TYPE_CLIENT;
-		monc->client->msgr.inst.name.num =
+		if (msgr->inst.name.type == CEPH_ENTITY_TYPE_CLIENT)
+			msgr->inst.name.num =
 					cpu_to_le64(monc->auth->global_id);
 
 		__send_subscribe(monc);

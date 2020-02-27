@@ -294,7 +294,8 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 extern void ceph_destroy_options(struct ceph_options *opt);
 extern int ceph_compare_options(struct ceph_options *new_opt,
 				struct ceph_client *client);
-struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private);
+struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private,
+                                       __u8 entity_type, __u64 entity_num);
 struct ceph_entity_addr *ceph_client_addr(struct ceph_client *client);
 u64 ceph_client_gid(struct ceph_client *client);
 extern void ceph_destroy_client(struct ceph_client *client);

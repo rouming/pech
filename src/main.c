@@ -69,7 +69,8 @@ static int start_task(void *arg)
 	struct ceph_client *client;
 	int ret;
 
-	client = ceph_create_client(opt, NULL);
+	client = ceph_create_client(opt, NULL,
+				    CEPH_ENTITY_TYPE_OSD, 0);
 	BUG_ON(IS_ERR(client));
 
 	ret = ceph_open_session(client);

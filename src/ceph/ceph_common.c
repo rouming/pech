@@ -597,7 +597,8 @@ EXPORT_SYMBOL(ceph_client_gid);
 /*
  * create a fresh client instance
  */
-struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private)
+struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private,
+				       __u8 entity_type, __u64 entity_num)
 {
 	struct ceph_client *client;
 	struct ceph_entity_addr *myaddr = NULL;
@@ -629,7 +630,7 @@ struct ceph_client *ceph_create_client(struct ceph_options *opt, void *private)
 	if (ceph_test_opt(client, MYIP))
 		myaddr = &client->options->my_addr;
 
-	ceph_messenger_init(&client->msgr, myaddr);
+	ceph_messenger_init(&client->msgr, entity_type, entity_num, myaddr);
 
 	/* subsystems */
 	err = ceph_monc_init(&client->monc, client);

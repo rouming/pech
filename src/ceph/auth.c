@@ -92,6 +92,10 @@ int ceph_auth_entity_name_encode(const char *name, void **p, void *end)
 
 	if (*p + 2*sizeof(u32) + len > end)
 		return -ERANGE;
+	/*
+	 * XXX For OSD case do we need to change that
+	 * XXX to CEPH_ENTITY_TYPE_OSD ?
+	 */
 	ceph_encode_32(p, CEPH_ENTITY_TYPE_CLIENT);
 	ceph_encode_32(p, len);
 	ceph_encode_copy(p, name, len);
