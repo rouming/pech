@@ -165,59 +165,6 @@ typedef unsigned int __bitwise slab_flags_t;
 
 #define KBUILD_MODNAME ""
 
-
-// printk.h
-
-#define print_hex_dump(...)
-
-#define printk(...) printf(__VA_ARGS__)
-
-/*
- * These can be used to print at the various log levels.
- * All of these will print unconditionally, although note that pr_debug()
- * and other debug macros are compiled out unless either DEBUG is defined
- * or CONFIG_DYNAMIC_DEBUG is set.
- */
-#define pr_emerg(fmt, ...) \
-	printf("EMERG " fmt, ##__VA_ARGS__)
-#define pr_alert(fmt, ...) \
-	printf("ALERT " fmt, ##__VA_ARGS__)
-#define pr_crit(fmt, ...) \
-	printf("CRIT " fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) \
-	printf("ERR " fmt, ##__VA_ARGS__)
-#define pr_warn(fmt, ...) \
-	printf("WARNING " fmt, ##__VA_ARGS__)
-#define pr_notice(fmt, ...) \
-	printf("NOTICE " fmt, ##__VA_ARGS__)
-#define pr_info(fmt, ...) \
-	printf("INFO " fmt, ##__VA_ARGS__)
-#define pr_debug(fmt, ...) \
-	printf("DEBUG " fmt, ##__VA_ARGS__)
-
-
-#define printk_ratelimited(...) printk(__VA_ARGS__)
-
-#define pr_emerg_ratelimited(fmt, ...)					\
-	printk_ratelimited("EMERG " fmt, ##__VA_ARGS__)
-#define pr_alert_ratelimited(fmt, ...)					\
-	printk_ratelimited("ALERT " fmt, ##__VA_ARGS__)
-#define pr_crit_ratelimited(fmt, ...)					\
-	printk_ratelimited("CRIT " fmt, ##__VA_ARGS__)
-#define pr_err_ratelimited(fmt, ...)					\
-	printk_ratelimited("ERR " fmt, ##__VA_ARGS__)
-#define pr_warn_ratelimited(fmt, ...)					\
-	printk_ratelimited("WARNING " fmt, ##__VA_ARGS__)
-#define pr_notice_ratelimited(fmt, ...)					\
-	printk_ratelimited("NOTICE " fmt, ##__VA_ARGS__)
-#define pr_info_ratelimited(fmt, ...)					\
-	printk_ratelimited("INFO " fmt, ##__VA_ARGS__)
-/* no pr_cont_ratelimited, don't do that... */
-
-#define pr_devel_ratelimited(...)					\
-	printk_ratelimited(__VA_ARGS__)
-
-
 # define __compiletime_assert(condition, msg, prefix, suffix)		\
 	do {								\
 		extern void prefix ## suffix(void) __compiletime_error(msg); \

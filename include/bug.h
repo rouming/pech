@@ -7,9 +7,9 @@
 #include <limits.h>
 #include <stdlib.h>
 
-#define TAINT_WARN			9
+#include "printk.h"
 
-#define __printf(a, b)                  __attribute__((__format__(printf, a, b)))
+#define TAINT_WARN			9
 
 /*
  * Don't use BUG() or BUG_ON() unless there's really no way out; one
