@@ -12,6 +12,7 @@
 #include "timedef.h"
 #include "err.h"
 #include "module.h"
+#include "printk.h"
 
 #include "ceph/libceph.h"
 
@@ -57,6 +58,11 @@ static int parse_options(struct ceph_options *opts, int argc, char **argv)
 							 opts, NULL);
 				if (ret)
 					break;
+				continue;
+			}
+			/* Parse 'log_level=' just here */
+			if (!strcmp(key, "log_level")) {
+				printk_set_current_level(atoi(value));
 				continue;
 			}
 
@@ -106,17 +112,13 @@ static int start_task(void *arg)
 	if (unlikely(ret))
 		goto err;
 
-	pr_info(">>>>\n");
-	pr_info(">>>> Ceph session opened\n");
-	pr_info(">>>>\n");
+	pr_notice(">>>> Ceph session opened\n");
 
 	ret = ceph_monc_osd_to_crush_add(&client->monc, osd, "0.0010");
 	if (unlikely(ret))
 		goto err;
 
-	pr_info(">>>>\n");
-	pr_info(">>>> Add osd.%d to crush\n", osd);
-	pr_info(">>>>\n");
+	pr_notice(">>>> Add osd.%d to crush\n", osd);
 
 	ret = ceph_monc_osd_boot(&client->monc, osd, &init->opt->fsid);
 	if (unlikely(ret))
@@ -144,9 +146,7 @@ static int start_task(void *arg)
 
 	BUG_ON(!ceph_osd_is_up(client->osdc.osdmap, osd));
 
-	pr_info(">>>>\n");
-	pr_info(">>>> Boot osd.%d\n", osd);
-	pr_info(">>>>\n");
+	pr_notice(">>>> Boot osd.%d\n", osd);
 
 	/* Ok, now can be set for outer usage */
 	init->client = client;
@@ -204,11 +204,8 @@ static int stop_task(void *arg)
 				break;
 			}
 		}
-		if (is_down) {
-			pr_info(">>>>\n");
-			pr_info(">>>> Tear down osd.%d\n", osd);
-			pr_info(">>>>\n");
-		}
+		if (is_down)
+			pr_notice(">>>> Tear down osd.%d\n", osd);
 destroy_client:
 		ceph_destroy_client(client);
 	}
