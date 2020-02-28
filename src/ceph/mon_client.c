@@ -247,6 +247,23 @@ static void __schedule_delayed(struct ceph_mon_client *monc)
 			 round_jiffies_relative(delay));
 }
 
+/*
+ * Reschedule beacon send
+ */
+static void __schedule_beacon_send(struct ceph_mon_client *monc)
+{
+	struct ceph_messenger *msgr = &monc->client->msgr;
+	unsigned long delay = CEPH_MONC_BEACON_INTERVAL;
+
+	if (msgr->inst.name.type != CEPH_ENTITY_TYPE_OSD)
+		/* This is only for OSD */
+		return;
+
+	dout("__schedule_beacon_send after %lu\n", delay);
+	mod_delayed_work(system_wq, &monc->beacon_work,
+			 round_jiffies_relative(delay));
+}
+
 const char *ceph_sub_str[] = {
 	[CEPH_SUB_MONMAP] = "monmap",
 	[CEPH_SUB_OSDMAP] = "osdmap",
@@ -460,6 +477,7 @@ int ceph_monc_open_session(struct ceph_mon_client *monc)
 	__ceph_monc_want_map(monc, CEPH_SUB_OSDMAP, 0, false);
 	__open_session(monc);
 	__schedule_delayed(monc);
+	__schedule_beacon_send(monc);
 	mutex_unlock(&monc->mutex);
 	return 0;
 }
@@ -1183,6 +1201,41 @@ bad:
 }
 EXPORT_SYMBOL(ceph_monc_osd_mark_me_down);
 
+static int ceph_monc_osd_send_beacon(struct ceph_mon_client *monc)
+{
+	struct ceph_osd_beacon *cmd, osd_beacon_cmd = {
+		.monhdr = {
+			.have_version    = cpu_to_le64(monc->monmap->epoch),
+			.session_mon     = cpu_to_le16(-1),
+			.session_mon_tid = 0,
+		},
+		.min_last_epoch_clean = cpu_to_le32(monc->monmap->epoch),
+	};
+	struct ceph_mon_generic_request *req;
+	int ret = -ENOMEM;
+
+	req = alloc_generic_request(monc, GFP_NOIO);
+	if (!req)
+		goto out;
+
+	req->request = ceph_msg_new(CEPH_MSG_OSD_BEACON, sizeof(*cmd),
+				    GFP_NOIO, true);
+	if (!req->request)
+		goto out;
+
+	cmd = req->request->front.iov_base;
+	*cmd = osd_beacon_cmd;
+
+	mutex_lock(&monc->mutex);
+	set_tid_generic_request(req);
+	send_generic_request(monc, req);
+	mutex_unlock(&monc->mutex);
+	ret = 0;
+out:
+	put_generic_request(req);
+	return ret;
+}
+
 /*
  * Resend pending generic requests.
  */
@@ -1241,6 +1294,25 @@ static void delayed_work(struct work_struct *work)
 	}
 	__schedule_delayed(monc);
 	mutex_unlock(&monc->mutex);
+}
+
+/*
+ * Send beacon to monitors saying we are alive and healthy.
+ */
+static void send_beacon_work(struct work_struct *work)
+{
+	struct ceph_mon_client *monc;
+	int ret;
+
+	monc = container_of(work, typeof(*monc), beacon_work.work);
+	dout("monc send_beacon_work\n");
+
+	ret = ceph_monc_osd_send_beacon(monc);
+	if (unlikely(ret))
+		pr_err("ceph_monc_osd_send_beacon: failed %d\n", ret);
+
+	/* Rearm work, it's ok here to rearm without locks */
+	__schedule_beacon_send(monc);
 }
 
 /*
@@ -1328,6 +1400,7 @@ int ceph_monc_init(struct ceph_mon_client *monc, struct ceph_client *cl)
 
 	init_completion(&monc->m_osd_marked_down_comp);
 	INIT_DELAYED_WORK(&monc->delayed_work, delayed_work);
+	INIT_DELAYED_WORK(&monc->beacon_work, send_beacon_work);
 	monc->generic_request_tree = RB_ROOT;
 	monc->last_tid = 0;
 
@@ -1354,6 +1427,7 @@ void ceph_monc_stop(struct ceph_mon_client *monc)
 {
 	dout("stop\n");
 	cancel_delayed_work_sync(&monc->delayed_work);
+	cancel_delayed_work_sync(&monc->beacon_work);
 
 	mutex_lock(&monc->mutex);
 	__close_session(monc);

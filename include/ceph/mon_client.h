@@ -73,6 +73,7 @@ struct ceph_mon_client {
 
 	struct mutex mutex;
 	struct delayed_work delayed_work;
+	struct delayed_work beacon_work;
 
 	struct ceph_auth_client *auth;
 	struct ceph_msg *m_auth, *m_auth_reply, *m_subscribe, *m_subscribe_ack;
