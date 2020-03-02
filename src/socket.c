@@ -116,6 +116,69 @@ static int socket_connect(struct socket *sock,
 	return ret;
 }
 
+static int socket_bind(struct socket *sock, struct sockaddr *myaddr,
+		       int sockaddr_len)
+{
+	int ret;
+
+	ret = bind(sock->fd, myaddr, sockaddr_len);
+	if (ret < 0)
+		ret = -errno;
+
+	return ret;
+}
+
+static int socket_accept(struct socket *sock, struct socket *newsock,
+			 int flags, bool kern)
+{
+	struct sockaddr_storage addr;
+	socklen_t len = sizeof(addr);
+	int fd, ret;
+
+	(void)kern;
+
+	fd = accept4(sock->fd, (struct sockaddr *)&addr, &len, flags);
+	if (unlikely(fd < 0))
+		return -errno;
+
+	/* Add socketfd to the event loop in edge trigger mode */
+	newsock->ev.events = EPOLLET | EPOLLIN | EPOLLOUT;
+	ret = event_item_add(&newsock->ev, fd);
+	if (WARN(ret, "event_item_add: failed %d\n", ret)) {
+		close(fd);
+		return ret;
+	}
+
+	/* Switch to CONNECTED here and avoid ->sk_change_state() call */
+	newsock->fd = fd;
+	newsock->state = SS_CONNECTED;
+	newsock->sk->sk_state = TCP_ESTABLISHED;
+
+	return 0;
+}
+
+static int socket_listen(struct socket *sock, int len)
+{
+	int ret;
+
+	ret = listen(sock->fd, len);
+	if (unlikely(ret < 0))
+		return -errno;
+
+	sock->state = SS_CONNECTED;
+	sock->sk->sk_state = TCP_LISTEN;
+
+	/* Add socketfd to the event loop in edge trigger mode */
+	sock->ev.events = EPOLLET | EPOLLIN;
+	ret = event_item_add(&sock->ev, sock->fd);
+	if (WARN(ret, "event_item_add: failed %d\n", ret)) {
+		/* Can't revert listen() call, so expect this won't happen */
+		return ret;
+	}
+
+	return 0;
+}
+
 static int socket_shutdown(struct socket *sock, int flags)
 {
 	int ret;
@@ -152,9 +215,37 @@ bool sk_stream_is_writeable(const struct sock *sk)
 
 static struct proto_ops sock_ops = {
 	.connect  = socket_connect,
+	.bind     = socket_bind,
+	.accept   = socket_accept,
+	.listen   = socket_listen,
 	.shutdown = socket_shutdown,
 	.sendpage = sock_no_sendpage
 };
+
+static int sock_create_lite(int family, int type, int protocol,
+			    struct socket **res)
+{
+	struct socket *sock;
+
+	sock = calloc(1, sizeof(*sock));
+	if (unlikely(!sock))
+		return -ENOMEM;
+
+	sock->fd = -1;
+	INIT_EVENT(&sock->ev, socket_event);
+	sock->state = SS_UNCONNECTED;
+	sock->ops = &sock_ops;
+
+	sock->__sk.sk_socket = sock;
+	sock->sk = &sock->__sk;
+	sock->sk->sk_family   = family;
+	sock->sk->sk_type     = type;
+	sock->sk->sk_protocol = protocol;
+
+	*res = sock;
+
+	return 0;
+}
 
 /**
  *	sock_create_kern - creates a socket (kernel space)
@@ -170,32 +261,80 @@ static struct proto_ops sock_ops = {
 int sock_create_kern(struct net *net, int family, int type, int protocol,
 		     struct socket **res)
 {
-	struct socket *sock;
-	int ret;
+	int ret, fd;
 
-	(void)net;
+	fd = socket(family, type, protocol);
+	if (unlikely(fd < 0))
+		return -errno;
 
-	sock = calloc(1, sizeof(*sock));
-	if (unlikely(!sock))
-		return -ENOMEM;
-
-	sock->fd = socket(family, type, protocol);
-	if (unlikely(sock->fd < 0)) {
-		ret = -errno;
-		free(sock);
+	ret = sock_create_lite(family, type, protocol, res);
+	if (unlikely(ret)) {
+		close(fd);
 		return ret;
 	}
-
-	INIT_EVENT(&sock->ev, socket_event);
-	sock->state = SS_UNCONNECTED;
-	sock->ops = &sock_ops;
-
-	sock->__sk.sk_socket = sock;
-	sock->sk = &sock->__sk;
-
-	*res = sock;
+	(*res)->fd = fd;
 
 	return 0;
+}
+
+/**
+ *	kernel_bind - bind an address to a socket (kernel space)
+ *	@sock: socket
+ *	@addr: address
+ *	@addrlen: length of address
+ *
+ *	Returns 0 or an error.
+ */
+
+int kernel_bind(struct socket *sock, struct sockaddr *addr, int addrlen)
+{
+	return sock->ops->bind(sock, addr, addrlen);
+}
+
+/**
+ *	kernel_listen - move socket to listening state (kernel space)
+ *	@sock: socket
+ *	@backlog: pending connections queue size
+ *
+ *	Returns 0 or an error.
+ */
+
+int kernel_listen(struct socket *sock, int backlog)
+{
+	return sock->ops->listen(sock, backlog);
+}
+
+/**
+ *	kernel_accept - accept a connection (kernel space)
+ *	@sock: listening socket
+ *	@newsock: new connected socket
+ *	@flags: flags
+ *
+ *	@flags must be SOCK_CLOEXEC, SOCK_NONBLOCK or 0.
+ *	If it fails, @newsock is guaranteed to be %NULL.
+ *	Returns 0 or an error.
+ */
+
+int kernel_accept(struct socket *sock, struct socket **newsock, int flags)
+{
+	struct sock *sk = sock->sk;
+	int err;
+
+	err = sock_create_lite(sk->sk_family, sk->sk_type,
+			       sk->sk_protocol, newsock);
+	if (err < 0)
+		goto done;
+
+	err = sock->ops->accept(sock, *newsock, flags, true);
+	if (err < 0) {
+		sock_release(*newsock);
+		*newsock = NULL;
+		goto done;
+	}
+	(*newsock)->ops = sock->ops;
+
+done:
+	return err;
 }
 
 /**
@@ -209,7 +348,8 @@ int sock_create_kern(struct net *net, int family, int type, int protocol,
 void sock_release(struct socket *sock)
 {
 	event_item_del(&sock->ev);
-	close(sock->fd);
+	if (sock->fd >= 0)
+		close(sock->fd);
 	free(sock);
 }
 

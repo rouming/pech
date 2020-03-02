@@ -25,6 +25,12 @@ struct proto_ops {
 	int		(*connect)   (struct socket *sock,
 				      struct sockaddr *vaddr,
 				      int sockaddr_len, int flags);
+	int		(*bind)	     (struct socket *sock,
+				      struct sockaddr *myaddr,
+				      int sockaddr_len);
+	int		(*accept)    (struct socket *sock,
+				      struct socket *newsock, int flags, bool kern);
+	int		(*listen)    (struct socket *sock, int len);
 	int		(*shutdown)  (struct socket *sock, int flags);
 	ssize_t		(*sendpage)  (struct socket *sock, struct page *page,
 				      int offset, size_t size, int flags);
@@ -35,6 +41,9 @@ struct sock {
 	unsigned char sk_state;
 	struct socket *sk_socket;
 	gfp_t sk_allocation;
+	unsigned short sk_family;
+	unsigned short sk_type;
+	unsigned short sk_protocol;
 
 	void			(*sk_state_change)(struct sock *sk);
 	void			(*sk_data_ready)(struct sock *sk);
@@ -57,6 +66,10 @@ extern ssize_t sock_no_sendpage(struct socket *sock, struct page *page,
 				int offset, size_t size, int flags);
 extern int sock_create_kern(struct net *net, int family, int type,
 			    int protocol, struct socket **res);
+extern int kernel_bind(struct socket *sock, struct sockaddr *addr, int addrlen);
+extern int kernel_listen(struct socket *sock, int backlog);
+extern int kernel_accept(struct socket *sock, struct socket **newsock,
+			 int flags);
 
 extern void sock_release(struct socket *sock);
 extern int kernel_setsockopt(struct socket *sock, int level, int optname,
