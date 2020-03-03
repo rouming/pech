@@ -5,58 +5,81 @@
 #include "types.h"
 #include "bug.h"
 
-/*
- * Actually does absolutely nothing, but validates correctness
- */
-
 struct rw_semaphore {
-	int locked;
+	struct wait_queue_head wq;
+	struct task_struct *wr_owner;
+	int rd_locked;
 };
 
 static inline void init_rwsem(struct rw_semaphore *rwsem)
 {
-	rwsem->locked = 0;
+	init_waitqueue_head(&rwsem->wq);
+	rwsem->wr_owner = NULL;
+	rwsem->rd_locked = 0;
 }
 
 static inline void up_read(struct rw_semaphore *rwsem)
 {
-	WARN_ON(!rwsem->locked);
-	rwsem->locked--;
+	if (WARN_ON(!rwsem->rd_locked))
+		return;
+	if (WARN_ON(rwsem->wr_owner))
+		return;
+
+	if (!--rwsem->rd_locked)
+		wake_up(&rwsem->wq);
 }
 
 static inline void down_read(struct rw_semaphore *rwsem)
 {
-	rwsem->locked++;
+	wait_event(rwsem->wq, !rwsem->wr_owner);
+	rwsem->rd_locked++;
 }
 
 static inline void up_write(struct rw_semaphore *rwsem)
 {
-	WARN_ON(rwsem->locked != 1);
-	rwsem->locked = 0;
+	if (WARN_ON(!rwsem->wr_owner))
+		return;
+
+	rwsem->wr_owner = NULL;
+	wake_up(&rwsem->wq);
 }
 
 static inline void down_write(struct rw_semaphore *rwsem)
 {
-	/* In our UP non-preemtible environment locked should not be observed */
-	WARN_ON(rwsem->locked);
-	rwsem->locked = 1;
-}
-
-static inline bool rwsem_is_locked(struct rw_semaphore *rwsem)
-{
-	return rwsem->locked;
+	if (rwsem->wr_owner) {
+		/* Wait for writer */
+		wait_event(rwsem->wq, !rwsem->wr_owner);
+		WARN_ON(rwsem->rd_locked);
+		rwsem->wr_owner = current;
+		return;
+	}
+	/* Wait for readers */
+	wait_event(rwsem->wq, !rwsem->rd_locked);
+	WARN_ON(rwsem->wr_owner);
+	rwsem->wr_owner = current;
 }
 
 static inline void downgrade_write(struct rw_semaphore *rwsem)
 {
-	WARN_ON(rwsem->locked != 1);
+	WARN_ON(!rwsem->wr_owner);
+	WARN_ON(rwsem->rd_locked);
+
+	rwsem->wr_owner = NULL;
+	rwsem->rd_locked = 1;
 }
 
 static inline bool down_read_trylock(struct rw_semaphore *rwsem)
 {
+	if (rwsem->wr_owner)
+		return false;
+
 	down_read(rwsem);
-	/* In our UP non-preemtible environment always succeed */
 	return true;
+}
+
+static inline bool rwsem_is_locked(struct rw_semaphore *rwsem)
+{
+	return rwsem->rd_locked || rwsem->wr_owner;
 }
 
 #endif
