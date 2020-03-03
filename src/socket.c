@@ -87,14 +87,7 @@ static int socket_connect(struct socket *sock,
 	case SS_CONNECTED:
 	case SS_CONNECTING:
 	case SS_UNCONNECTED:
-		if (flags & O_NONBLOCK) {
-			ret = fcntl(sock->fd, F_SETFL, O_NONBLOCK);
-			if (unlikely(ret)) {
-				ret = -errno;
-				pr_err("fcntl(): failed %d\n", ret);
-				return ret;
-			}
-		}
+		WARN_ON(!(flags& O_NONBLOCK));
 		ret = connect(sock->fd, vaddr, sockaddr_len);
 		if (ret)
 			ret = -errno;
@@ -136,6 +129,8 @@ static int socket_accept(struct socket *sock, struct socket *newsock,
 	int fd, ret;
 
 	(void)kern;
+
+	WARN_ON(!(flags& O_NONBLOCK));
 
 	fd = accept4(sock->fd, (struct sockaddr *)&addr, &len, flags);
 	if (unlikely(fd < 0))
@@ -266,6 +261,13 @@ int sock_create_kern(struct net *net, int family, int type, int protocol,
 	fd = socket(family, type, protocol);
 	if (unlikely(fd < 0))
 		return -errno;
+
+	/* Yes, we never block */
+	ret = fcntl(fd, F_SETFL, O_NONBLOCK);
+	if (unlikely(ret)) {
+		close(fd);
+		return ret;
+	}
 
 	ret = sock_create_lite(family, type, protocol, res);
 	if (unlikely(ret)) {
