@@ -3045,8 +3045,8 @@ void ceph_messenger_reset_nonce(struct ceph_messenger *msgr)
  * initialize a new messenger instance
  */
 void ceph_messenger_init(struct ceph_messenger *msgr,
-			 __u8 entity_type, __u64 entity_num,
-			 struct ceph_entity_addr *myaddr)
+			 struct ceph_entity_addr *myaddr,
+			 __u8 entity_type, __u64 entity_num)
 {
 	spin_lock_init(&msgr->global_seq_lock);
 

@@ -340,8 +340,8 @@ extern void ceph_msgr_exit(void);
 extern void ceph_msgr_flush(void);
 
 extern void ceph_messenger_init(struct ceph_messenger *msgr,
-				__u8 entity_type, __u64 entity_num,
-				struct ceph_entity_addr *myaddr);
+				struct ceph_entity_addr *myaddr,
+				__u8 entity_type, __u64 entity_num);
 extern void ceph_messenger_fini(struct ceph_messenger *msgr);
 extern void ceph_messenger_reset_nonce(struct ceph_messenger *msgr);
 
