@@ -873,7 +873,7 @@ static int ceph_x_sign_message(struct ceph_auth_handshake *auth,
 	__le64 sig;
 	int ret;
 
-	if (ceph_test_opt(from_msgr(msg->con->msgr), NOMSGSIGN))
+	if (ceph_test_opt(msg->con->msgr->options, NOMSGSIGN))
 		return 0;
 
 	ret = calc_signature((struct ceph_x_authorizer *)auth->authorizer,
@@ -892,7 +892,7 @@ static int ceph_x_check_message_signature(struct ceph_auth_handshake *auth,
 	__le64 sig_check;
 	int ret;
 
-	if (ceph_test_opt(from_msgr(msg->con->msgr), NOMSGSIGN))
+	if (ceph_test_opt(msg->con->msgr->options, NOMSGSIGN))
 		return 0;
 
 	ret = calc_signature((struct ceph_x_authorizer *)auth->authorizer,

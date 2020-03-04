@@ -2326,7 +2326,7 @@ again:
 		   (ceph_osdmap_flag(osdc, CEPH_OSDMAP_FULL) ||
 		    pool_full(osdc, req->r_t.base_oloc.pool))) {
 		dout("req %p full/pool_full\n", req);
-		if (ceph_test_opt(osdc->client, ABORT_ON_FULL)) {
+		if (ceph_test_opt(osdc->client->options, ABORT_ON_FULL)) {
 			err = -ENOSPC;
 		} else {
 			pr_warn_ratelimited("FULL or reached pool quota\n");
@@ -2564,7 +2564,7 @@ static void ceph_osdc_abort_on_full(struct ceph_osd_client *osdc)
 {
 	bool victims = false;
 
-	if (ceph_test_opt(osdc->client, ABORT_ON_FULL) &&
+	if (ceph_test_opt(osdc->client->options, ABORT_ON_FULL) &&
 	    (ceph_osdmap_flag(osdc, CEPH_OSDMAP_FULL) || have_pool_full(osdc)))
 		for_each_request(osdc, abort_on_full_fn, &victims);
 }

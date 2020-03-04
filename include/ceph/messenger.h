@@ -66,6 +66,10 @@ struct ceph_messenger {
 	struct ceph_entity_inst inst;    /* my name+address */
 	struct ceph_entity_addr my_enc_addr;
 
+	struct ceph_options *options;
+	u64 supported_features;
+	u64 required_features;
+
 	atomic_t stopping;
 	possible_net_t net;
 
@@ -341,7 +345,9 @@ extern void ceph_msgr_flush(void);
 
 extern void ceph_messenger_init(struct ceph_messenger *msgr,
 				struct ceph_entity_addr *myaddr,
-				__u8 entity_type, __u64 entity_num);
+				__u8 entity_type, __u64 entity_num,
+				struct ceph_options *options,
+				u64 sup_features, u64 req_featuress);
 extern void ceph_messenger_fini(struct ceph_messenger *msgr);
 extern void ceph_messenger_reset_nonce(struct ceph_messenger *msgr);
 

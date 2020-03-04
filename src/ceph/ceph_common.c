@@ -602,7 +602,11 @@ struct ceph_client *__ceph_create_client(struct ceph_options *opt, void *private
 {
 	struct ceph_client *client;
 	struct ceph_entity_addr *myaddr = NULL;
+	u64 supported_features, required_features;
 	int err;
+
+	supported_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
+	required_features = CEPH_FEATURES_REQUIRED_DEFAULT;
 
 	err = wait_for_random_bytes();
 	if (err < 0)
@@ -620,17 +624,16 @@ struct ceph_client *__ceph_create_client(struct ceph_options *opt, void *private
 	client->auth_err = 0;
 
 	client->extra_mon_dispatch = NULL;
-	client->supported_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
-	client->required_features = CEPH_FEATURES_REQUIRED_DEFAULT;
 
-	if (!ceph_test_opt(client, NOMSGAUTH))
-		client->required_features |= CEPH_FEATURE_MSG_AUTH;
+	if (!ceph_test_opt(client->options, NOMSGAUTH))
+		required_features |= CEPH_FEATURE_MSG_AUTH;
 
 	/* msgr */
-	if (ceph_test_opt(client, MYIP))
+	if (ceph_test_opt(client->options, MYIP))
 		myaddr = &client->options->my_addr;
 
-	ceph_messenger_init(&client->msgr, myaddr, entity_type, entity_num);
+	ceph_messenger_init(&client->msgr, myaddr, entity_type, entity_num,
+			    opt, supported_features, required_features);
 
 	/* subsystems */
 	err = ceph_monc_init(&client->monc, client);

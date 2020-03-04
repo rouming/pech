@@ -41,10 +41,10 @@
 
 #define CEPH_OPT_DEFAULT   (CEPH_OPT_TCP_NODELAY)
 
-#define ceph_set_opt(client, opt) \
-	(client)->options->flags |= CEPH_OPT_##opt;
-#define ceph_test_opt(client, opt) \
-	(!!((client)->options->flags & CEPH_OPT_##opt))
+#define ceph_set_opt(options, opt) \
+	(options)->flags |= CEPH_OPT_##opt;
+#define ceph_test_opt(options, opt) \
+	(!!((options)->flags & CEPH_OPT_##opt))
 
 struct ceph_options {
 	int flags;
@@ -133,9 +133,6 @@ struct ceph_client {
 
 	int (*extra_mon_dispatch)(struct ceph_client *, struct ceph_msg *);
 
-	u64 supported_features;
-	u64 required_features;
-
 	struct ceph_messenger msgr;   /* messenger instance */
 	struct ceph_mon_client monc;
 	struct ceph_osd_client osdc;
@@ -147,9 +144,6 @@ struct ceph_client {
 	struct dentry *debugfs_options;
 #endif
 };
-
-#define from_msgr(ms)	container_of(ms, struct ceph_client, msgr)
-
 
 /*
  * snapshots
