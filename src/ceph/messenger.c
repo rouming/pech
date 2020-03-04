@@ -1485,7 +1485,7 @@ static int prepare_write_connect(struct ceph_connection *con)
 
 	con->out_connect.features =
 	    cpu_to_le64(con->msgr->supported_features);
-	con->out_connect.host_type = cpu_to_le32(CEPH_ENTITY_TYPE_CLIENT);
+	con->out_connect.host_type = cpu_to_le32(con->msgr->inst.name.type);
 	con->out_connect.connect_seq = cpu_to_le32(con->connect_seq);
 	con->out_connect.global_seq = cpu_to_le32(global_seq);
 	con->out_connect.protocol_version = cpu_to_le32(proto);
