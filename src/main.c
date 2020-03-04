@@ -15,6 +15,7 @@
 #include "printk.h"
 
 #include "ceph/libceph.h"
+#include "ceph/ceph_features.h"
 
 struct init_struct {
 	struct task_struct  *start_task;
@@ -101,8 +102,9 @@ static int start_task(void *arg)
 	int ret, osd = init->osd;
 	bool is_up;
 
-	client = __ceph_create_client(init->opt, NULL,
-				      CEPH_ENTITY_TYPE_OSD, osd);
+	client = __ceph_create_client(init->opt, NULL, CEPH_ENTITY_TYPE_OSD,
+				      osd, CEPH_FEATURES_SUPPORTED_OSD,
+				      CEPH_FEATURES_REQUIRED_DEFAULT);
 	if (unlikely(IS_ERR(client))) {
 		ret = PTR_ERR(client);
 		goto err;

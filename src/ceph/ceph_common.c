@@ -598,15 +598,13 @@ EXPORT_SYMBOL(ceph_client_gid);
  * create a fresh client instance
  */
 struct ceph_client *__ceph_create_client(struct ceph_options *opt, void *private,
-					 __u8 entity_type, __u64 entity_num)
+					 __u8 entity_type, __u64 entity_num,
+					 u64 supported_features,
+					 u64 required_features)
 {
 	struct ceph_client *client;
 	struct ceph_entity_addr *myaddr = NULL;
-	u64 supported_features, required_features;
 	int err;
-
-	supported_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
-	required_features = CEPH_FEATURES_REQUIRED_DEFAULT;
 
 	err = wait_for_random_bytes();
 	if (err < 0)
