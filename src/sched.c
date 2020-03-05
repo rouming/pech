@@ -13,7 +13,7 @@
 #include "timer.h"
 #include "err.h"
 
-#define TASK_STACK_SIZE (1<<12)
+#define TASK_STACK_SIZE (1<<16) /* 64k */
 
 struct task_struct {
 	struct list_head tsk_list;
