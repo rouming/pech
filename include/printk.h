@@ -28,6 +28,9 @@
 extern __printf(1, 2) int printk(const char *s, ...);
 extern void printk_set_current_level(int level);
 
+/* format.c */
+extern void init_formatting(void);
+
 /* TODO */
 #define print_hex_dump(...)
 

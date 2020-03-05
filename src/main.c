@@ -289,6 +289,7 @@ int main(int argc, char **argv)
 
 	memset(&init, 0, sizeof(init));
 
+	init_formatting();
 	init_sched();
 	init_event();
 	init_workqueue();
