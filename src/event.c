@@ -9,17 +9,44 @@
 #include "timer.h"
 
 struct event_task_struct {
-	int epollfd;
-	bool stopped;
+	struct list_head set_events;
+	int              epollfd;
+	bool             stopped;
 };
 
-static void event_item_action(struct epoll_event *ev)
+static void event_item_do_action(struct epoll_event *ev)
 {
 	struct event_item *item;
 
 	item = (struct event_item *)ev->data.ptr;
-	item->revents = ev->events;
+	item->revents |= ev->events;
 	item->action(item);
+
+	/* No need to call action again */
+	item->revents = 0;
+	list_del_init(&item->entry);
+}
+
+static void events_set_do_action(struct event_task_struct *s)
+{
+	struct event_item *item;
+	LIST_HEAD(set_events);
+
+	/* Use temporal list to avoid live lock */
+	list_splice_init(&s->set_events, &set_events);
+
+	while (!list_empty(&set_events)) {
+		item = list_first_entry(&set_events, typeof(*item), entry);
+		WARN_ON(!item->revents);
+		item->action(item);
+		item->revents = 0;
+		list_del_init(&item->entry);
+	}
+}
+
+static bool events_are_set(struct event_task_struct *s)
+{
+	return !list_empty(&s->set_events);
 }
 
 static int event_task(void *arg)
@@ -33,8 +60,11 @@ static int event_task(void *arg)
 		/* Get closest expiration timeout from timer */
 		timeout = timer_calc_msecs_timeout();
 
-		/* Do not block if there is a task except us to run */
-		if (tasks_to_run() > 1)
+		/*
+		 * Do not block if there is a task except us to run or
+		 * events were forcly set to be executed
+		 */
+		if (tasks_to_run() > 1 || events_are_set(s))
 			timeout = 0;
 
 		num = epoll_wait(s->epollfd, evs, ARRAY_SIZE(evs), timeout);
@@ -51,7 +81,10 @@ static int event_task(void *arg)
 
 		/* Then handle all possible events */
 		for (i = 0; i < num; i++)
-			event_item_action(&evs[i]);
+			event_item_do_action(&evs[i]);
+
+		/* Run all set events actions */
+		events_set_do_action(s);
 
 		schedule();
 	}
@@ -74,6 +107,8 @@ void init_event(void)
 	struct task_struct *task;
 
 	BUG_ON(event_struct.epollfd >= 0);
+
+	INIT_LIST_HEAD(&event_struct.set_events);
 
 	event_struct.epollfd = epoll_create1(EPOLL_CLOEXEC);
 	BUG_ON(event_struct.epollfd < 0);
@@ -127,4 +162,9 @@ int event_item_del(struct event_item *item)
 int event_item_mod(struct event_item *item)
 {
 	return __event_item_mod(item, EPOLL_CTL_MOD);
+}
+
+void event_item_set(struct event_item *item)
+{
+	list_move_tail(&item->entry, &event_struct.set_events);
 }
