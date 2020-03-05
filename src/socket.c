@@ -400,11 +400,18 @@ int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
 	int ret;
 
 	ret = recvmsg(sock->fd, &msg, flags);
-	if (unlikely(ret < 0))
+	if (unlikely(ret < 0)) {
 		ret = -errno;
-	else if (unlikely(!ret))
-		/* Catch EOF, see socket_event() for details */
+	} else if (unlikely(!ret)) {
+		/*
+		 * Catch EOF, see socket_event() for details
+		 * which will be called again on next event loop
+		 * iteration
+		 */
 		sock->state = SS_DISCONNECTING;
+		sock->ev.revents |= EPOLLIN;
+		event_item_set(&sock->ev);
+	}
 
 	return ret;
 }
