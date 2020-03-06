@@ -174,6 +174,33 @@ static int socket_listen(struct socket *sock, int len)
 	return 0;
 }
 
+static int socket_getname(struct socket *sock, struct sockaddr *uaddr,
+			  int peer)
+{
+	socklen_t len = sizeof(struct sockaddr_storage);
+	int ret;
+
+	switch(peer) {
+	case 0:
+		ret = getsockname(sock->fd, uaddr, &len);
+		break;
+	case 1:
+		ret = getpeername(sock->fd, uaddr, &len);
+		break;
+	case 2:
+		ret = getsockopt(sock->fd, SOL_SOCKET,
+				 SO_PEERNAME, uaddr, &len);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (ret)
+		return -errno;
+
+	return len;
+}
+
 static int socket_shutdown(struct socket *sock, int flags)
 {
 	int ret;
@@ -213,6 +240,7 @@ static struct proto_ops sock_ops = {
 	.bind     = socket_bind,
 	.accept   = socket_accept,
 	.listen   = socket_listen,
+	.getname  = socket_getname,
 	.shutdown = socket_shutdown,
 	.sendpage = sock_no_sendpage
 };
@@ -375,6 +403,20 @@ int kernel_setsockopt(struct socket *sock, int level, int optname,
 		ret = -errno;
 
 	return ret;
+}
+
+/**
+ *	kernel_peername - get the address which the socket is connected (kernel space)
+ *	@sock: socket
+ *	@addr: address holder
+ *
+ *	Fills the @addr pointer with the address which the socket is connected.
+ *	Returns 0 or an error code.
+ */
+
+int kernel_getpeername(struct socket *sock, struct sockaddr *addr)
+{
+	return sock->ops->getname(sock, addr, 1);
 }
 
 /**

@@ -31,6 +31,8 @@ struct proto_ops {
 	int		(*accept)    (struct socket *sock,
 				      struct socket *newsock, int flags, bool kern);
 	int		(*listen)    (struct socket *sock, int len);
+	int		(*getname)   (struct socket *sock, struct sockaddr *uaddr,
+				      int peer);
 	int		(*shutdown)  (struct socket *sock, int flags);
 	ssize_t		(*sendpage)  (struct socket *sock, struct page *page,
 				      int offset, size_t size, int flags);
@@ -74,6 +76,7 @@ extern int kernel_accept(struct socket *sock, struct socket **newsock,
 extern void sock_release(struct socket *sock);
 extern int kernel_setsockopt(struct socket *sock, int level, int optname,
 			     char *optval, unsigned int optlen);
+extern int kernel_getpeername(struct socket *sock, struct sockaddr *addr);
 extern int sock_recvmsg(struct socket *sock, struct kmsghdr *msg, int flags);
 extern int sock_sendmsg(struct socket *sock, struct kmsghdr *msg);
 extern int kernel_sendmsg(struct socket *sock, struct kmsghdr *msg,
