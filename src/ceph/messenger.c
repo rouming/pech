@@ -176,6 +176,7 @@ static char tag_msg = CEPH_MSGR_TAG_MSG;
 static char tag_ack = CEPH_MSGR_TAG_ACK;
 static char tag_keepalive = CEPH_MSGR_TAG_KEEPALIVE;
 static char tag_keepalive2 = CEPH_MSGR_TAG_KEEPALIVE2;
+static char tag_keepalive2_ack = CEPH_MSGR_TAG_KEEPALIVE2_ACK;
 
 #ifdef CONFIG_LOCKDEP
 static struct lock_class_key socket_class;
@@ -1413,6 +1414,27 @@ static void prepare_write_seq(struct ceph_connection *con)
 }
 
 /*
+ * Prepare to write keepalive ack byte.
+ */
+static void prepare_write_keepalive_ack(struct ceph_connection *con,
+					struct ceph_timespec *ceph_ts)
+{
+	dout("prepare_write_keepalive_ack %p\n", con);
+	con_out_kvec_reset(con);
+	if (con->peer_features & CEPH_FEATURE_MSGR_KEEPALIVE2) {
+		con_out_kvec_add(con, sizeof(tag_keepalive2_ack),
+				 &tag_keepalive2_ack);
+		typecheck(typeof(*ceph_ts), con->out_temp_keepalive2);
+		memcpy(&con->out_temp_keepalive2, ceph_ts, sizeof(*ceph_ts));
+		con_out_kvec_add(con, sizeof(con->out_temp_keepalive2),
+				 &con->out_temp_keepalive2);
+	} else {
+		con_out_kvec_add(con, sizeof(tag_keepalive), &tag_keepalive);
+	}
+	con_flag_set(con, CON_FLAG_WRITE_PENDING);
+}
+
+/*
  * Prepare to write keepalive byte.
  */
 static void prepare_write_keepalive(struct ceph_connection *con)
@@ -1531,12 +1553,69 @@ static int prepare_write_connect_on_client(struct ceph_connection *con)
 	return 0;
 }
 
+static void prepare_write_banner_on_server(struct ceph_connection *con)
+{
+	con_out_kvec_add(con, strlen(CEPH_BANNER), CEPH_BANNER);
+	/*
+	 * So called actual_peer_addr on client side,
+	 * see read_partial_banner_on_client()
+	 */
+	con_out_kvec_add(con, sizeof (con->msgr->my_enc_addr),
+			 &con->msgr->my_enc_addr);
+
+	/*
+	 * So called peer_addr_for_me on client side,
+	 * see read_partial_banner_on_client()
+	 */
+	con_out_kvec_add(con, sizeof (con->actual_peer_addr),
+			 &con->actual_peer_addr);
+	con->out_more = 0;
+	con_flag_set(con, CON_FLAG_WRITE_PENDING);
+}
+
+static void __prepare_write_connect_on_server(struct ceph_connection *con)
+{
+	con_out_kvec_add(con, sizeof(con->srv.out_reply),
+			 &con->srv.out_reply);
+
+	/* XXX Proper auth reply should be implemented */
+	if (con->auth)
+		con_out_kvec_add(con, con->auth->authorizer_reply_buf_len,
+				 con->auth->authorizer_reply_buf);
+
+	con->out_more = 0;
+	con_flag_set(con, CON_FLAG_WRITE_PENDING);
+}
+
+static int prepare_write_connect_on_server(struct ceph_connection *con)
+{
+	unsigned int global_seq = get_global_seq(con->msgr, 0);
+	int proto = get_protocol_version(con);
+	unsigned int connect_seq;
+
+	dout("%s %p cseq=%d gseq=%d proto=%d\n", __func__,
+	     con, con->connect_seq, global_seq, proto);
+
+	connect_seq = le32_to_cpu(con->srv.in_connect.connect_seq);
+	connect_seq += 1;
+
+	con->srv.out_reply.tag = CEPH_MSGR_TAG_READY;
+	con->srv.out_reply.features =
+	    cpu_to_le64(con->msgr->supported_features);
+	con->srv.out_reply.connect_seq = cpu_to_le32(connect_seq);
+	con->srv.out_reply.global_seq = cpu_to_le32(global_seq);
+	con->srv.out_reply.protocol_version = cpu_to_le32(proto);
+	con->srv.out_reply.flags = 0;
+
+	__prepare_write_connect_on_server(con);
+	return 0;
+}
+
 static void prepare_write_banner(struct ceph_connection *con)
 {
 	if (con_is_client(con))
 		return prepare_write_banner_on_client(con);
-
-	BUG();
+	return prepare_write_banner_on_server(con);
 }
 
 /*
@@ -1722,6 +1801,12 @@ static void prepare_read_tag(struct ceph_connection *con)
 	con->in_tag = CEPH_MSGR_TAG_READY;
 }
 
+static void prepare_read_keepalive(struct ceph_connection *con)
+{
+	dout("prepare_read_keepalive %p\n", con);
+	con->in_base_pos = 0;
+}
+
 static void prepare_read_keepalive_ack(struct ceph_connection *con)
 {
 	dout("prepare_read_keepalive_ack %p\n", con);
@@ -1830,22 +1915,83 @@ out:
 	return ret;
 }
 
+static int read_partial_banner_on_server(struct ceph_connection *con)
+{
+	int size;
+	int end;
+	int ret;
+
+	dout("%s %p at %d\n", __func__, con, con->in_base_pos);
+
+	/* peer's banner */
+	size = strlen(CEPH_BANNER);
+	end = size;
+	ret = read_partial(con, end, size, con->in_banner);
+	if (ret <= 0)
+		goto out;
+
+	size = sizeof (con->actual_peer_addr);
+	end += size;
+	ret = read_partial(con, end, size, &con->actual_peer_addr);
+	if (ret <= 0)
+		goto out;
+	ceph_decode_banner_addr(&con->actual_peer_addr);
+
+out:
+	return ret;
+}
+
+static int read_partial_connect_on_server(struct ceph_connection *con)
+{
+	int size;
+	int end;
+	int ret;
+
+	dout("%s %p at %d\n", __func__, con, con->in_base_pos);
+
+	size = sizeof (con->srv.in_connect);
+	end = size;
+	ret = read_partial(con, end, size, &con->srv.in_connect);
+	if (ret <= 0)
+		goto out;
+
+	size = le32_to_cpu(con->srv.in_connect.authorizer_len);
+	if (size) {
+		/* XXX Proper auth handling should be done */
+		if (size > sizeof(con->srv.auth_buf)) {
+			pr_err("authorizer req too big: %d > %zu\n", size,
+			       sizeof(con->srv.auth_buf));
+			ret = -EINVAL;
+			goto out;
+		}
+
+		end += size;
+		ret = read_partial(con, end, size,
+				   con->srv.auth_buf);
+		if (ret <= 0)
+			goto out;
+	}
+
+	dout("%s %p con_seq = %u, g_seq = %u\n",
+	     __func__, con,
+	     le32_to_cpu(con->srv.in_connect.connect_seq),
+	     le32_to_cpu(con->srv.in_connect.global_seq));
+out:
+	return ret;
+}
+
 static int read_partial_banner(struct ceph_connection *con)
 {
 	if (con_is_client(con))
 		return read_partial_banner_on_client(con);
-
-	BUG();
-	return -EINVAL;
+	return read_partial_banner_on_server(con);
 }
 
 static int read_partial_connect(struct ceph_connection *con)
 {
 	if (con_is_client(con))
 		return read_partial_connect_on_client(con);
-
-	BUG();
-	return -EINVAL;
+	return read_partial_connect_on_server(con);
 }
 
 /*
@@ -2309,22 +2455,58 @@ static int process_connect_on_client(struct ceph_connection *con)
 	return 0;
 }
 
+static int process_banner_on_server(struct ceph_connection *con)
+{
+	dout("%s on %p\n", __func__, con);
+
+	if (verify_hello(con) < 0)
+		return -1;
+
+	return 0;
+}
+
+static int process_connect_on_server(struct ceph_connection *con)
+{
+	u64 peer_feat = le64_to_cpu(con->srv.in_connect.features);
+	int len;
+
+	dout("%s on %p tag %d\n", __func__, con, (int)con->in_tag);
+
+	len = le32_to_cpu(con->srv.in_connect.authorizer_len);
+	if (len) {
+		/* XXX Proper auth should be implemented */
+		con->srv.out_reply.authorizer_len = 0;
+	}
+
+	WARN_ON(con->state != CON_STATE_NEGOTIATING);
+	con->state = CON_STATE_OPEN;
+	con->auth_retry = 0;    /* we authenticated; clear flag */
+	con->peer_global_seq = le32_to_cpu(con->srv.in_connect.global_seq);
+	con->peer_features = peer_feat;
+	dout("%s got READY gseq %d cseq %d (%d)\n", __func__,
+	     con->peer_global_seq,
+	     le32_to_cpu(con->srv.in_connect.connect_seq),
+	     con->connect_seq);
+	con->delay = 0;      /* reset backoff memory */
+	con->peer_name.type = le32_to_cpu(con->srv.in_connect.host_type);
+
+	prepare_read_tag(con);
+
+	return 0;
+}
+
 static int process_banner(struct ceph_connection *con)
 {
 	if (con_is_client(con))
 		return process_banner_on_client(con);
-
-	BUG();
-	return -EINVAL;
+	return process_banner_on_server(con);
 }
 
 static int process_connect(struct ceph_connection *con)
 {
 	if (con_is_client(con))
 		return process_connect_on_client(con);
-
-	BUG();
-	return -EINVAL;
+	return process_connect_on_server(con);
 }
 
 /*
@@ -2628,13 +2810,40 @@ static void process_message(struct ceph_connection *con)
 	mutex_lock(&con->mutex);
 }
 
+static int read_keepalive_timespec(struct ceph_connection *con,
+				   struct ceph_timespec *ceph_ts)
+{
+	size_t size = sizeof(*ceph_ts);
+	int ret = read_partial(con, size, size, ceph_ts);
+	if (ret <= 0)
+		return ret;
+
+	return 1;
+}
+
+static int read_keepalive(struct ceph_connection *con)
+{
+	struct ceph_timespec ceph_ts;
+	int ret;
+
+	ret = read_keepalive_timespec(con, &ceph_ts);
+	if (ret <= 0)
+		return ret;
+
+	prepare_write_keepalive_ack(con, &ceph_ts);
+	prepare_read_tag(con);
+	return 1;
+}
+
 static int read_keepalive_ack(struct ceph_connection *con)
 {
 	struct ceph_timespec ceph_ts;
-	size_t size = sizeof(ceph_ts);
-	int ret = read_partial(con, size, size, &ceph_ts);
+	int ret;
+
+	ret = read_keepalive_timespec(con, &ceph_ts);
 	if (ret <= 0)
 		return ret;
+
 	ceph_decode_timespec64(&con->last_keepalive_ack, &ceph_ts);
 	prepare_read_tag(con);
 	return 1;
@@ -2658,7 +2867,7 @@ static int try_write(struct ceph_connection *con)
 
 	/* open the socket first? */
 	if (con->state == CON_STATE_PREOPEN) {
-		BUG_ON(con->sock);
+		BUG_ON(!(con_is_client(con) ^ !!con->sock));
 		con->state = CON_STATE_CONNECTING;
 
 		con_out_kvec_reset(con);
@@ -2667,12 +2876,14 @@ static int try_write(struct ceph_connection *con)
 
 		BUG_ON(con->in_msg);
 		con->in_tag = CEPH_MSGR_TAG_READY;
-		dout("try_write initiating connect on %p new state %lu\n",
-		     con, con->state);
-		ret = ceph_tcp_connect(con);
-		if (ret < 0) {
-			con->error_msg = "connect error";
-			goto out;
+		if (con_is_client(con)) {
+			dout("try_write initiating connect on %p new state %lu\n",
+			     con, con->state);
+			ret = ceph_tcp_connect(con);
+			if (ret < 0) {
+				con->error_msg = "connect error";
+				goto out;
+			}
 		}
 	}
 
@@ -2770,14 +2981,16 @@ more:
 
 		con->state = CON_STATE_NEGOTIATING;
 
-		/*
-		 * Received banner is good, exchange connection info.
-		 * Do not reset out_kvec, as sending our banner raced
-		 * with receiving peer banner after connect completed.
-		 */
-		ret = prepare_write_connect_on_client(con);
-		if (ret < 0)
-			goto out;
+		if (con_is_client(con)) {
+			/*
+			 * Received banner is good, exchange connection info.
+			 * Do not reset out_kvec, as sending our banner raced
+			 * with receiving peer banner after connect completed.
+			 */
+			ret = prepare_write_connect_on_client(con);
+			if (ret < 0)
+				goto out;
+		}
 		prepare_read_connect(con);
 
 		/* Send connection info before awaiting response */
@@ -2790,6 +3003,8 @@ more:
 		if (ret <= 0)
 			goto out;
 		ret = process_connect(con);
+		if (!ret && !con_is_client(con))
+			ret = prepare_write_connect_on_server(con);
 		if (ret < 0)
 			goto out;
 		goto more;
@@ -2823,6 +3038,9 @@ more:
 			break;
 		case CEPH_MSGR_TAG_ACK:
 			prepare_read_ack(con);
+			break;
+		case CEPH_MSGR_TAG_KEEPALIVE2:
+			prepare_read_keepalive(con);
 			break;
 		case CEPH_MSGR_TAG_KEEPALIVE2_ACK:
 			prepare_read_keepalive_ack(con);
@@ -2868,6 +3086,12 @@ more:
 		if (ret <= 0)
 			goto out;
 		process_ack(con);
+		goto more;
+	}
+	if (con->in_tag == CEPH_MSGR_TAG_KEEPALIVE2) {
+		ret = read_keepalive(con);
+		if (ret <= 0)
+			goto out;
 		goto more;
 	}
 	if (con->in_tag == CEPH_MSGR_TAG_KEEPALIVE2_ACK) {
@@ -3024,7 +3248,7 @@ static void ceph_con_workfn(struct work_struct *work)
 		}
 		if (con->state == CON_STATE_PREOPEN) {
 			dout("%s: con %p PREOPEN\n", __func__, con);
-			BUG_ON(con->sock);
+			BUG_ON(con_is_client(con) && con->sock);
 		}
 
 		ret = try_read(con);

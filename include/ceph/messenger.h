@@ -303,6 +303,12 @@ struct ceph_connection {
 			struct ceph_msg_connect out_connect;
 			struct ceph_msg_connect_reply in_reply;
 		} cli;
+		struct {
+			struct ceph_msg_connect_reply out_reply;
+			struct ceph_msg_connect in_connect;
+			/* XXX Auth should be properly supported for server */
+			char auth_buf[128];
+		} srv;
 	};
 	struct ceph_entity_addr actual_peer_addr;
 
