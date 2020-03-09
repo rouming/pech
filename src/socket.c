@@ -3,6 +3,7 @@
 #include "socket.h"
 #include "bitops.h"
 #include "page.h"
+#include "bvec.h"
 
 static void socket_event(struct event_item *ev)
 {
@@ -419,6 +420,33 @@ int kernel_getpeername(struct socket *sock, struct sockaddr *addr)
 	return sock->ops->getname(sock, addr, 1);
 }
 
+static struct iovec *iov_iter_to_iovec(struct iov_iter *iter,
+				       struct iovec *iovtmp)
+{
+	struct iovec *iov;
+
+	if (iov_iter_is_bvec(iter)) {
+		struct bvec_iter bi = {
+			.bi_bvec_done = iter->iov_offset,
+			.bi_size      = iter->count
+		};
+		struct bio_vec bv;
+		int i = 0;
+
+		for_each_bvec(bv, iter->bvec, bi, bi) {
+			struct iovec *iovp = &iovtmp[i++];
+			iovp->iov_base = page_address(bv.bv_page) +
+				bv.bv_offset;
+			iovp->iov_len = bv.bv_len;
+		}
+		iov = iovtmp;
+	} else {
+		iov = (struct iovec *)iter->iov;
+	}
+
+	return iov;
+}
+
 /**
  *	sock_recvmsg - receive a message from @sock
  *	@sock: socket
@@ -433,13 +461,16 @@ int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
 	struct msghdr msg = {
 		.msg_name    = kmsg->msg_name,
 		.msg_namelen = kmsg->msg_namelen,
-		.msg_iov     = (struct iovec *)kmsg->msg_iter.iov,
 		.msg_iovlen  = kmsg->msg_iter.nr_segs,
 		.msg_control = kmsg->msg_control,
 		.msg_controllen = kmsg->msg_controllen,
 		.msg_flags    = kmsg->msg_flags
 	};
+	struct iov_iter *iter = &kmsg->msg_iter;
+	struct iovec iovtmp[iter->nr_segs];
 	int ret;
+
+	msg.msg_iov = iov_iter_to_iovec(iter, iovtmp);
 
 	ret = recvmsg(sock->fd, &msg, flags);
 	if (unlikely(ret < 0)) {
@@ -471,13 +502,16 @@ int sock_sendmsg(struct socket *sock, struct kmsghdr *kmsg)
 	struct msghdr msg = {
 		.msg_name    = kmsg->msg_name,
 		.msg_namelen = kmsg->msg_namelen,
-		.msg_iov     = (struct iovec *)kmsg->msg_iter.iov,
 		.msg_iovlen  = kmsg->msg_iter.nr_segs,
 		.msg_control = kmsg->msg_control,
 		.msg_controllen = kmsg->msg_controllen,
 		.msg_flags    = kmsg->msg_flags
 	};
+	struct iov_iter *iter = &kmsg->msg_iter;
+	struct iovec iovtmp[iter->nr_segs];
 	int ret;
+
+	msg.msg_iov = iov_iter_to_iovec(iter, iovtmp);
 
 	ret = sendmsg(sock->fd, &msg, 0);
 	if (unlikely(ret < 0)) {
