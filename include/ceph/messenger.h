@@ -275,6 +275,8 @@ struct ceph_connection {
 	unsigned long state;
 	const char *error_msg;  /* error message, if any */
 
+	unsigned int role; /* is client or server */
+
 	struct ceph_entity_name peer_name; /* peer name */
 
 	u64 peer_features;
@@ -296,8 +298,12 @@ struct ceph_connection {
 
 	/* connection negotiation temps */
 	char in_banner[CEPH_BANNER_MAX_LEN];
-	struct ceph_msg_connect out_connect;
-	struct ceph_msg_connect_reply in_reply;
+	union {
+		struct {
+			struct ceph_msg_connect out_connect;
+			struct ceph_msg_connect_reply in_reply;
+		} cli;
+	};
 	struct ceph_entity_addr actual_peer_addr;
 
 	/* message out temps */

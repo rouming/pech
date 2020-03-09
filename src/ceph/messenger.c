@@ -107,6 +107,15 @@
 #define CON_FLAG_SOCK_CLOSED	   3  /* socket state changed to closed */
 #define CON_FLAG_BACKOFF           4  /* need to retry queuing delayed work */
 
+
+/*
+ * ceph connection role
+ */
+enum {
+	CON_CLIENT = 0,
+	CON_SERVER = 1
+};
+
 static bool con_flag_valid(unsigned long con_flag)
 {
 	switch (con_flag) {
@@ -362,6 +371,19 @@ static void con_sock_state_closed(struct ceph_connection *con)
 		printk("%s: unexpected old state %d\n", __func__, old_state);
 	dout("%s con %p sock %d -> %d\n", __func__, con, old_state,
 	     CON_SOCK_STATE_CLOSED);
+}
+
+static const char *con_role_str(struct ceph_connection *con)
+{
+	const char *roles_str[] = {
+		"client", "server"
+	};
+	return roles_str[con->role & 1];
+}
+
+static bool con_is_client(struct ceph_connection *con)
+{
+	return con->role == CON_CLIENT;
 }
 
 /*
@@ -705,6 +727,7 @@ void ceph_con_open(struct ceph_connection *con,
 
 	WARN_ON(con->state != CON_STATE_CLOSED);
 	con->state = CON_STATE_PREOPEN;
+	con->role = CON_CLIENT;
 
 	con->peer_name.type = (__u8) entity_type;
 	con->peer_name.num = cpu_to_le64(entity_num);
@@ -1414,15 +1437,15 @@ static void prepare_write_keepalive(struct ceph_connection *con)
  * Connection negotiation.
  */
 
-static int get_connect_authorizer(struct ceph_connection *con)
+static int get_connect_authorizer_on_client(struct ceph_connection *con)
 {
 	struct ceph_auth_handshake *auth;
 	int auth_proto;
 
 	if (!con->ops->get_authorizer) {
 		con->auth = NULL;
-		con->out_connect.authorizer_protocol = CEPH_AUTH_UNKNOWN;
-		con->out_connect.authorizer_len = 0;
+		con->cli.out_connect.authorizer_protocol = CEPH_AUTH_UNKNOWN;
+		con->cli.out_connect.authorizer_len = 0;
 		return 0;
 	}
 
@@ -1431,15 +1454,15 @@ static int get_connect_authorizer(struct ceph_connection *con)
 		return PTR_ERR(auth);
 
 	con->auth = auth;
-	con->out_connect.authorizer_protocol = cpu_to_le32(auth_proto);
-	con->out_connect.authorizer_len = cpu_to_le32(auth->authorizer_buf_len);
+	con->cli.out_connect.authorizer_protocol = cpu_to_le32(auth_proto);
+	con->cli.out_connect.authorizer_len = cpu_to_le32(auth->authorizer_buf_len);
 	return 0;
 }
 
 /*
  * We connected to a peer and are saying hello.
  */
-static void prepare_write_banner(struct ceph_connection *con)
+static void prepare_write_banner_on_client(struct ceph_connection *con)
 {
 	con_out_kvec_add(con, strlen(CEPH_BANNER), CEPH_BANNER);
 	con_out_kvec_add(con, sizeof (con->msgr->my_enc_addr),
@@ -1449,9 +1472,10 @@ static void prepare_write_banner(struct ceph_connection *con)
 	con_flag_set(con, CON_FLAG_WRITE_PENDING);
 }
 
-static void __prepare_write_connect(struct ceph_connection *con)
+static void __prepare_write_connect_on_client(struct ceph_connection *con)
 {
-	con_out_kvec_add(con, sizeof(con->out_connect), &con->out_connect);
+	con_out_kvec_add(con, sizeof(con->cli.out_connect),
+			 &con->cli.out_connect);
 	if (con->auth)
 		con_out_kvec_add(con, con->auth->authorizer_buf_len,
 				 con->auth->authorizer_buf);
@@ -1460,43 +1484,59 @@ static void __prepare_write_connect(struct ceph_connection *con)
 	con_flag_set(con, CON_FLAG_WRITE_PENDING);
 }
 
-static int prepare_write_connect(struct ceph_connection *con)
+static int get_protocol_version(struct ceph_connection *con)
 {
-	unsigned int global_seq = get_global_seq(con->msgr, 0);
-	int proto;
-	int ret;
+	int host_type = con->msgr->inst.name.type;
+	int peer_type = con->peer_name.type;
 
-	switch (con->peer_name.type) {
-	case CEPH_ENTITY_TYPE_MON:
-		proto = CEPH_MONC_PROTOCOL;
-		break;
+	if (host_type == peer_type)
+		return CEPH_OSD_PROTOCOL;
+
+	switch (con_is_client(con) ? peer_type : host_type) {
 	case CEPH_ENTITY_TYPE_OSD:
-		proto = CEPH_OSDC_PROTOCOL;
-		break;
+		return CEPH_OSDC_PROTOCOL;
 	case CEPH_ENTITY_TYPE_MDS:
-		proto = CEPH_MDSC_PROTOCOL;
-		break;
+		return CEPH_MDSC_PROTOCOL;
+	case CEPH_ENTITY_TYPE_MON:
+		return CEPH_MONC_PROTOCOL;
 	default:
 		BUG();
 	}
 
-	dout("prepare_write_connect %p cseq=%d gseq=%d proto=%d\n", con,
-	     con->connect_seq, global_seq, proto);
+	return 0;
+}
 
-	con->out_connect.features =
+static int prepare_write_connect_on_client(struct ceph_connection *con)
+{
+	unsigned int global_seq = get_global_seq(con->msgr, 0);
+	int proto = get_protocol_version(con);
+	int ret;
+
+	dout("%s %p cseq=%d gseq=%d proto=%d\n", __func__,
+	     con, con->connect_seq, global_seq, proto);
+
+	con->cli.out_connect.features =
 	    cpu_to_le64(con->msgr->supported_features);
-	con->out_connect.host_type = cpu_to_le32(con->msgr->inst.name.type);
-	con->out_connect.connect_seq = cpu_to_le32(con->connect_seq);
-	con->out_connect.global_seq = cpu_to_le32(global_seq);
-	con->out_connect.protocol_version = cpu_to_le32(proto);
-	con->out_connect.flags = 0;
+	con->cli.out_connect.host_type = cpu_to_le32(con->msgr->inst.name.type);
+	con->cli.out_connect.connect_seq = cpu_to_le32(con->connect_seq);
+	con->cli.out_connect.global_seq = cpu_to_le32(global_seq);
+	con->cli.out_connect.protocol_version = cpu_to_le32(proto);
+	con->cli.out_connect.flags = 0;
 
-	ret = get_connect_authorizer(con);
+	ret = get_connect_authorizer_on_client(con);
 	if (ret)
 		return ret;
 
-	__prepare_write_connect(con);
+	__prepare_write_connect_on_client(con);
 	return 0;
+}
+
+static void prepare_write_banner(struct ceph_connection *con)
+{
+	if (con_is_client(con))
+		return prepare_write_banner_on_client(con);
+
+	BUG();
 }
 
 /*
@@ -1719,13 +1759,13 @@ static int read_partial(struct ceph_connection *con,
 /*
  * Read all or part of the connect-side handshake on a new connection
  */
-static int read_partial_banner(struct ceph_connection *con)
+static int read_partial_banner_on_client(struct ceph_connection *con)
 {
 	int size;
 	int end;
 	int ret;
 
-	dout("read_partial_banner %p at %d\n", con, con->in_base_pos);
+	dout("%s %p at %d\n", __func__, con, con->in_base_pos);
 
 	/* peer's banner */
 	size = strlen(CEPH_BANNER);
@@ -1752,22 +1792,22 @@ out:
 	return ret;
 }
 
-static int read_partial_connect(struct ceph_connection *con)
+static int read_partial_connect_on_client(struct ceph_connection *con)
 {
 	int size;
 	int end;
 	int ret;
 
-	dout("read_partial_connect %p at %d\n", con, con->in_base_pos);
+	dout("%s %p at %d\n", __func__, con, con->in_base_pos);
 
-	size = sizeof (con->in_reply);
+	size = sizeof (con->cli.in_reply);
 	end = size;
-	ret = read_partial(con, end, size, &con->in_reply);
+	ret = read_partial(con, end, size, &con->cli.in_reply);
 	if (ret <= 0)
 		goto out;
 
 	if (con->auth) {
-		size = le32_to_cpu(con->in_reply.authorizer_len);
+		size = le32_to_cpu(con->cli.in_reply.authorizer_len);
 		if (size > con->auth->authorizer_reply_buf_len) {
 			pr_err("authorizer reply too big: %d > %zu\n", size,
 			       con->auth->authorizer_reply_buf_len);
@@ -1782,12 +1822,30 @@ static int read_partial_connect(struct ceph_connection *con)
 			goto out;
 	}
 
-	dout("read_partial_connect %p tag %d, con_seq = %u, g_seq = %u\n",
-	     con, (int)con->in_reply.tag,
-	     le32_to_cpu(con->in_reply.connect_seq),
-	     le32_to_cpu(con->in_reply.global_seq));
+	dout("%s %p tag %d, con_seq = %u, g_seq = %u\n",
+	     __func__, con, (int)con->cli.in_reply.tag,
+	     le32_to_cpu(con->cli.in_reply.connect_seq),
+	     le32_to_cpu(con->cli.in_reply.global_seq));
 out:
 	return ret;
+}
+
+static int read_partial_banner(struct ceph_connection *con)
+{
+	if (con_is_client(con))
+		return read_partial_banner_on_client(con);
+
+	BUG();
+	return -EINVAL;
+}
+
+static int read_partial_connect(struct ceph_connection *con)
+{
+	if (con_is_client(con))
+		return read_partial_connect_on_client(con);
+
+	BUG();
+	return -EINVAL;
 }
 
 /*
@@ -2012,9 +2070,9 @@ bad:
 	return ret;
 }
 
-static int process_banner(struct ceph_connection *con)
+static int process_banner_on_client(struct ceph_connection *con)
 {
-	dout("process_banner on %p\n", con);
+	dout("%s on %p\n", __func__, con);
 
 	if (verify_hello(con) < 0)
 		return -1;
@@ -2048,40 +2106,40 @@ static int process_banner(struct ceph_connection *con)
 		       sizeof(con->peer_addr_for_me.in_addr));
 		addr_set_port(&con->msgr->inst.addr, port);
 		encode_my_addr(con->msgr);
-		dout("process_banner learned my addr is %s\n",
+		dout("%s learned my addr is %s\n", __func__,
 		     ceph_pr_addr(&con->msgr->inst.addr));
 	}
 
 	return 0;
 }
 
-static int process_connect(struct ceph_connection *con)
+static int process_connect_on_client(struct ceph_connection *con)
 {
 	u64 sup_feat = con->msgr->supported_features;
 	u64 req_feat = con->msgr->required_features;
-	u64 server_feat = le64_to_cpu(con->in_reply.features);
+	u64 server_feat = le64_to_cpu(con->cli.in_reply.features);
 	int ret;
 
-	dout("process_connect on %p tag %d\n", con, (int)con->in_tag);
+	dout("%s on %p tag %d\n", __func__, con, (int)con->in_tag);
 
 	if (con->auth) {
-		int len = le32_to_cpu(con->in_reply.authorizer_len);
+		int len = le32_to_cpu(con->cli.in_reply.authorizer_len);
 
 		/*
 		 * Any connection that defines ->get_authorizer()
 		 * should also define ->add_authorizer_challenge() and
 		 * ->verify_authorizer_reply().
 		 *
-		 * See get_connect_authorizer().
+		 * See get_connect_authorizer_on_client().
 		 */
-		if (con->in_reply.tag == CEPH_MSGR_TAG_CHALLENGE_AUTHORIZER) {
+		if (con->cli.in_reply.tag == CEPH_MSGR_TAG_CHALLENGE_AUTHORIZER) {
 			ret = con->ops->add_authorizer_challenge(
 				    con, con->auth->authorizer_reply_buf, len);
 			if (ret < 0)
 				return ret;
 
 			con_out_kvec_reset(con);
-			__prepare_write_connect(con);
+			__prepare_write_connect_on_client(con);
 			prepare_read_connect(con);
 			return 0;
 		}
@@ -2095,7 +2153,7 @@ static int process_connect(struct ceph_connection *con)
 		}
 	}
 
-	switch (con->in_reply.tag) {
+	switch (con->cli.in_reply.tag) {
 	case CEPH_MSGR_TAG_FEATURES:
 		pr_err("%s%lld %s feature set mismatch,"
 		       " my %llx < server's %llx, missing %llx\n",
@@ -2111,22 +2169,22 @@ static int process_connect(struct ceph_connection *con)
 		       " my %d != server's %d\n",
 		       ENTITY_NAME(con->peer_name),
 		       ceph_pr_addr(&con->peer_addr),
-		       le32_to_cpu(con->out_connect.protocol_version),
-		       le32_to_cpu(con->in_reply.protocol_version));
+		       le32_to_cpu(con->cli.out_connect.protocol_version),
+		       le32_to_cpu(con->cli.in_reply.protocol_version));
 		con->error_msg = "protocol version mismatch";
 		reset_connection(con);
 		return -1;
 
 	case CEPH_MSGR_TAG_BADAUTHORIZER:
 		con->auth_retry++;
-		dout("process_connect %p got BADAUTHORIZER attempt %d\n", con,
-		     con->auth_retry);
+		dout("%s %p got BADAUTHORIZER attempt %d\n", __func__,
+		     con, con->auth_retry);
 		if (con->auth_retry == 2) {
 			con->error_msg = "connect authorization failure";
 			return -1;
 		}
 		con_out_kvec_reset(con);
-		ret = prepare_write_connect(con);
+		ret = prepare_write_connect_on_client(con);
 		if (ret < 0)
 			return ret;
 		prepare_read_connect(con);
@@ -2140,14 +2198,14 @@ static int process_connect(struct ceph_connection *con)
 		 * that they must have reset their session, and may have
 		 * dropped messages.
 		 */
-		dout("process_connect got RESET peer seq %u\n",
-		     le32_to_cpu(con->in_reply.connect_seq));
+		dout("%s got RESET peer seq %u\n", __func__,
+		     le32_to_cpu(con->cli.in_reply.connect_seq));
 		pr_err("%s%lld %s connection reset\n",
 		       ENTITY_NAME(con->peer_name),
 		       ceph_pr_addr(&con->peer_addr));
 		reset_connection(con);
 		con_out_kvec_reset(con);
-		ret = prepare_write_connect(con);
+		ret = prepare_write_connect_on_client(con);
 		if (ret < 0)
 			return ret;
 		prepare_read_connect(con);
@@ -2167,12 +2225,12 @@ static int process_connect(struct ceph_connection *con)
 		 * If we sent a smaller connect_seq than the peer has, try
 		 * again with a larger value.
 		 */
-		dout("process_connect got RETRY_SESSION my seq %u, peer %u\n",
-		     le32_to_cpu(con->out_connect.connect_seq),
-		     le32_to_cpu(con->in_reply.connect_seq));
-		con->connect_seq = le32_to_cpu(con->in_reply.connect_seq);
+		dout("%s got RETRY_SESSION my seq %u, peer %u\n", __func__,
+		     le32_to_cpu(con->cli.out_connect.connect_seq),
+		     le32_to_cpu(con->cli.in_reply.connect_seq));
+		con->connect_seq = le32_to_cpu(con->cli.in_reply.connect_seq);
 		con_out_kvec_reset(con);
-		ret = prepare_write_connect(con);
+		ret = prepare_write_connect_on_client(con);
 		if (ret < 0)
 			return ret;
 		prepare_read_connect(con);
@@ -2183,13 +2241,13 @@ static int process_connect(struct ceph_connection *con)
 		 * If we sent a smaller global_seq than the peer has, try
 		 * again with a larger value.
 		 */
-		dout("process_connect got RETRY_GLOBAL my %u peer_gseq %u\n",
+		dout("%s got RETRY_GLOBAL my %u peer_gseq %u\n", __func__,
 		     con->peer_global_seq,
-		     le32_to_cpu(con->in_reply.global_seq));
+		     le32_to_cpu(con->cli.in_reply.global_seq));
 		get_global_seq(con->msgr,
-			       le32_to_cpu(con->in_reply.global_seq));
+			       le32_to_cpu(con->cli.in_reply.global_seq));
 		con_out_kvec_reset(con);
-		ret = prepare_write_connect(con);
+		ret = prepare_write_connect_on_client(con);
 		if (ret < 0)
 			return ret;
 		prepare_read_connect(con);
@@ -2211,22 +2269,22 @@ static int process_connect(struct ceph_connection *con)
 		WARN_ON(con->state != CON_STATE_NEGOTIATING);
 		con->state = CON_STATE_OPEN;
 		con->auth_retry = 0;    /* we authenticated; clear flag */
-		con->peer_global_seq = le32_to_cpu(con->in_reply.global_seq);
+		con->peer_global_seq = le32_to_cpu(con->cli.in_reply.global_seq);
 		con->connect_seq++;
 		con->peer_features = server_feat;
-		dout("process_connect got READY gseq %d cseq %d (%d)\n",
+		dout("%s got READY gseq %d cseq %d (%d)\n", __func__,
 		     con->peer_global_seq,
-		     le32_to_cpu(con->in_reply.connect_seq),
+		     le32_to_cpu(con->cli.in_reply.connect_seq),
 		     con->connect_seq);
 		WARN_ON(con->connect_seq !=
-			le32_to_cpu(con->in_reply.connect_seq));
+			le32_to_cpu(con->cli.in_reply.connect_seq));
 
-		if (con->in_reply.flags & CEPH_MSG_CONNECT_LOSSY)
+		if (con->cli.in_reply.flags & CEPH_MSG_CONNECT_LOSSY)
 			con_flag_set(con, CON_FLAG_LOSSYTX);
 
 		con->delay = 0;      /* reset backoff memory */
 
-		if (con->in_reply.tag == CEPH_MSGR_TAG_SEQ) {
+		if (con->cli.in_reply.tag == CEPH_MSGR_TAG_SEQ) {
 			prepare_write_seq(con);
 			prepare_read_seq(con);
 		} else {
@@ -2251,6 +2309,23 @@ static int process_connect(struct ceph_connection *con)
 	return 0;
 }
 
+static int process_banner(struct ceph_connection *con)
+{
+	if (con_is_client(con))
+		return process_banner_on_client(con);
+
+	BUG();
+	return -EINVAL;
+}
+
+static int process_connect(struct ceph_connection *con)
+{
+	if (con_is_client(con))
+		return process_connect_on_client(con);
+
+	BUG();
+	return -EINVAL;
+}
 
 /*
  * read (part of) an ack
@@ -2573,7 +2648,8 @@ static int try_write(struct ceph_connection *con)
 {
 	int ret = 1;
 
-	dout("try_write start %p state %lu\n", con, con->state);
+	dout("try_write start %p state %lu, %s role\n",
+	     con, con->state, con_role_str(con));
 	if (con->state != CON_STATE_PREOPEN &&
 	    con->state != CON_STATE_CONNECTING &&
 	    con->state != CON_STATE_NEGOTIATING &&
@@ -2670,7 +2746,8 @@ static int try_read(struct ceph_connection *con)
 	int ret = -1;
 
 more:
-	dout("try_read start on %p state %lu\n", con, con->state);
+	dout("try_read start on %p state %lu, %s role\n", con,
+	     con->state, con_role_str(con));
 	if (con->state != CON_STATE_CONNECTING &&
 	    con->state != CON_STATE_NEGOTIATING &&
 	    con->state != CON_STATE_OPEN)
@@ -2682,7 +2759,8 @@ more:
 	     con->in_base_pos);
 
 	if (con->state == CON_STATE_CONNECTING) {
-		dout("try_read connecting\n");
+		dout("try_read connecting, %s role\n", con_role_str(con));
+
 		ret = read_partial_banner(con);
 		if (ret <= 0)
 			goto out;
@@ -2697,7 +2775,7 @@ more:
 		 * Do not reset out_kvec, as sending our banner raced
 		 * with receiving peer banner after connect completed.
 		 */
-		ret = prepare_write_connect(con);
+		ret = prepare_write_connect_on_client(con);
 		if (ret < 0)
 			goto out;
 		prepare_read_connect(con);

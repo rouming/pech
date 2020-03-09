@@ -25,7 +25,7 @@
 #define CEPH_OSDC_PROTOCOL   24 /* server/client */
 #define CEPH_MDSC_PROTOCOL   32 /* server/client */
 #define CEPH_MONC_PROTOCOL   15 /* server/client */
-
+#define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
 #define CEPH_INO_ROOT   1
 #define CEPH_INO_CEPH   2       /* hidden .ceph dir */
