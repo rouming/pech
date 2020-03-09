@@ -16,11 +16,12 @@
 
 #include "ceph/libceph.h"
 #include "ceph/ceph_features.h"
+#include "ceph/osd_server.h"
 
 struct init_struct {
 	struct task_struct  *start_task;
 	struct ceph_options *opt;
-	struct ceph_client  *client;
+	struct ceph_osd_server *osds;
 	struct event_item   sig_ev;
 	bool                stop_in_progress;
 	int                 sig_fd;
@@ -93,70 +94,26 @@ static void destroy_loop(void)
 static int start_task(void *arg)
 {
 	struct init_struct *init = arg;
-	struct ceph_client *client;
+	struct ceph_osd_server *osds;
+	int ret;
 
-	unsigned long _300ms = msecs_to_jiffies(300);
-	unsigned long _5s    = msecs_to_jiffies(5000);
-	unsigned long started;
-
-	int ret, osd = init->osd;
-	bool is_up;
-
-	client = __ceph_create_client(init->opt, NULL, CEPH_ENTITY_TYPE_OSD,
-				      osd, CEPH_FEATURES_SUPPORTED_OSD,
-				      CEPH_FEATURES_REQUIRED_DEFAULT);
-	if (unlikely(IS_ERR(client))) {
-		ret = PTR_ERR(client);
+	osds = ceph_create_osd_server(init->opt, init->osd);
+	if (unlikely(IS_ERR(osds))) {
+		ret = PTR_ERR(osds);
 		goto err;
 	}
 
-	ret = ceph_open_session(client);
+	ret = ceph_start_osd_server(osds);
 	if (unlikely(ret))
 		goto err;
-
-	pr_notice(">>>> Ceph session opened\n");
-
-	ret = ceph_monc_osd_to_crush_add(&client->monc, osd, "0.0010");
-	if (unlikely(ret))
-		goto err;
-
-	pr_notice(">>>> Add osd.%d to crush\n", osd);
-
-	ret = ceph_monc_osd_boot(&client->monc, osd, &init->opt->fsid);
-	if (unlikely(ret))
-		goto err;
-
-	started = jiffies;
-	is_up = false;
-	while (!time_after_eq(jiffies, started + _5s)) {
-		ret = ceph_wait_for_latest_osdmap(client, _300ms);
-		if (unlikely(ret && ret != -ETIMEDOUT))
-			goto err;
-
-		if (!ret &&
-		    ceph_osdmap_contains(client->osdc.osdmap, osd,
-					 ceph_client_addr(client)) &&
-		    ceph_osd_is_up(client->osdc.osdmap, osd)) {
-			is_up = true;
-			break;
-		}
-	}
-	if (!is_up) {
-		ret = -ETIMEDOUT;
-		goto err;
-	}
-
-	BUG_ON(!ceph_osd_is_up(client->osdc.osdmap, osd));
-
-	pr_notice(">>>> Boot osd.%d\n", osd);
 
 	/* Ok, now can be set for outer usage */
-	init->client = client;
+	init->osds = osds;
 
 	return 0;
 
 err:
-	ceph_destroy_client(client);
+	ceph_destroy_osd_server(osds);
 
 	/* Destroy the loop ourselves if stop task was not started */
 	if (!init->stop_in_progress)
@@ -168,49 +125,15 @@ err:
 static int stop_task(void *arg)
 {
 	struct init_struct *init = arg;
-
-	unsigned long _300ms = msecs_to_jiffies(300);
-	unsigned long _5s    = msecs_to_jiffies(5000);
-	unsigned long started;
-
-	int ret, osd = init->osd;
-	bool is_down;
+	int ret;
 
 	ret = kthread_stop(init->start_task);
 	put_task_struct(init->start_task);
 	init->start_task = NULL;
 
 	/* We mark osd down only if start task was successful */
-	if (!ret) {
-		struct ceph_client *client = init->client;
-
-		ret = ceph_monc_osd_mark_me_down(&client->monc, osd);
-		if (unlikely(ret && ret != -ETIMEDOUT)) {
-			pr_err("mark_me_down: failed %d\n", ret);
-			goto destroy_client;
-		}
-
-		started = jiffies;
-		is_down = false;
-		while (!time_after_eq(jiffies, started + _5s)) {
-			ret = ceph_wait_for_latest_osdmap(client, _300ms);
-			if (unlikely(ret && ret != -ETIMEDOUT)) {
-				pr_err("latest_osdmap: failed %d\n", ret);
-				break;
-			}
-			if (!ret &&
-			    ceph_osdmap_contains(client->osdc.osdmap, osd,
-						 ceph_client_addr(client)) &&
-			    !ceph_osd_is_up(client->osdc.osdmap, osd)) {
-				is_down = true;
-				break;
-			}
-		}
-		if (is_down)
-			pr_notice(">>>> Tear down osd.%d\n", osd);
-destroy_client:
-		ceph_destroy_client(client);
-	}
+	if (!ret)
+		ceph_destroy_osd_server(init->osds);
 
 	/* Stops the rest */
 	destroy_loop();
