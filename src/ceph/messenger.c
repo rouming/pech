@@ -183,6 +183,7 @@ static char tag_keepalive2_ack = CEPH_MSGR_TAG_KEEPALIVE2_ACK;
 static struct lock_class_key socket_class;
 #endif
 
+static void ceph_msgr_accept_workfn(struct work_struct *);
 static void queue_con(struct ceph_connection *con);
 static void cancel_con(struct ceph_connection *con);
 static void ceph_con_workfn(struct work_struct *);
@@ -346,6 +347,11 @@ static void con_sock_state_connected(struct ceph_connection *con)
 		printk("%s: unexpected old state %d\n", __func__, old_state);
 	dout("%s con %p sock %d -> %d\n", __func__, con, old_state,
 	     CON_SOCK_STATE_CONNECTED);
+}
+
+static void __con_sock_state_connected(struct ceph_connection *con)
+{
+	atomic_set(&con->sock_state, CON_SOCK_STATE_CONNECTED);
 }
 
 static void con_sock_state_closing(struct ceph_connection *con)
@@ -814,6 +820,16 @@ void ceph_con_init(struct ceph_connection *con, void *private,
 }
 EXPORT_SYMBOL(ceph_con_init);
 
+static struct ceph_connection *ceph_con_alloc(struct ceph_messenger *msgr)
+{
+	struct ceph_connection *con;
+
+	con = msgr->con_ops->alloc_con(msgr);
+	if (likely(con))
+		ceph_con_init(con, NULL, msgr->con_ops, msgr);
+
+	return con;
+}
 
 /*
  * We maintain a global counter to order connection attempts.  Get
@@ -3416,6 +3432,10 @@ void ceph_messenger_init(struct ceph_messenger *msgr,
 
 	atomic_set(&msgr->stopping, 0);
 	write_pnet(&msgr->net, get_net(current->nsproxy->net_ns));
+	INIT_WORK(&msgr->accept_work, ceph_msgr_accept_workfn);
+	msgr->listen_sock = NULL;
+	msgr->con_ops = NULL;
+	msgr->def_data_ready = NULL;
 
 	dout("%s %p\n", __func__, msgr);
 }
@@ -3423,9 +3443,209 @@ EXPORT_SYMBOL(ceph_messenger_init);
 
 void ceph_messenger_fini(struct ceph_messenger *msgr)
 {
+	ceph_messenger_stop_listen(msgr);
 	put_net(read_pnet(&msgr->net));
 }
 EXPORT_SYMBOL(ceph_messenger_fini);
+
+static void ceph_msgr_accept_workfn(struct work_struct *work)
+{
+	struct sockaddr_storage peer_addr;
+	struct ceph_messenger *msgr;
+	struct ceph_connection *con;
+	struct socket *newsock;
+	int ret;
+
+	msgr = container_of(work, typeof(*msgr), accept_work);
+
+	while (true) {
+		ret = kernel_accept(msgr->listen_sock, &newsock, O_NONBLOCK);
+		if (ret < 0) {
+			if (ret != -EAGAIN)
+				pr_warn("failed to accept err=%d\n", ret);
+			return;
+		}
+
+		con = ceph_con_alloc(msgr);
+		if (unlikely(!con)) {
+			pr_warn("connection allocation failed\n");
+			sock_release(newsock);
+			continue;
+		}
+
+		con->sock = newsock;
+		newsock->sk->sk_allocation = GFP_NOFS;
+
+#ifdef CONFIG_LOCKDEP
+		lockdep_set_class(&sock->sk->sk_lock, &socket_class);
+#endif
+		/* Immediately connected */
+		__con_sock_state_connected(con);
+
+		con->state = CON_STATE_PREOPEN;
+		con->role = CON_SERVER;
+		con->delay = 0;      /* reset backoff memory */
+
+		kernel_getpeername(con->sock, (struct sockaddr *)&peer_addr);
+		memcpy(&con->peer_addr_for_me.in_addr, &peer_addr,
+		       sizeof(peer_addr));
+
+		memcpy(&con->actual_peer_addr.in_addr,
+		       &con->msgr->inst.addr.in_addr,
+		       sizeof(peer_addr));
+
+		con->actual_peer_addr.nonce = 0;
+		con->peer_addr_for_me.nonce = 0;
+
+		/* Swap af family for parsing on client side */
+		ceph_encode_banner_addr(&con->actual_peer_addr);
+		ceph_encode_banner_addr(&con->peer_addr_for_me);
+
+
+		con->peer_addr.type = 0;
+		con->peer_addr.nonce = 0;
+
+		con->peer_name.type = 0;
+		con->peer_name.num = 0;
+
+		ret = msgr->con_ops->accept_con(con);
+		if (unlikely(ret)) {
+			msgr->con_ops->put(con);
+			continue;
+		}
+
+		/* Ok, since now we are safe to run our callbacks */
+		set_sock_callbacks(newsock, con);
+
+		/* Kick everything to start moving */
+		queue_con(con);
+	}
+}
+
+static void ceph_sock_listen_data_ready(struct sock *sk)
+{
+	struct ceph_messenger *msgr;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	msgr = sk->sk_user_data;
+	if (!msgr || atomic_read(&msgr->stopping))
+		goto out;
+
+	if (sk->sk_state == TCP_LISTEN)
+		queue_work(ceph_msgr_wq, &msgr->accept_work);
+out:
+	read_unlock_bh(&sk->sk_callback_lock);
+}
+
+/*
+ * Binds socket and starts listening. Function does not take any locks, so
+ * should not be concurrently called with itself or with *_stop_listen().
+ */
+int ceph_messenger_start_listen(struct ceph_messenger *msgr,
+				const struct ceph_connection_operations *ops)
+{
+	struct sockaddr_storage addr;
+	struct socket *sock;
+	int opt, ret;
+
+	if (!ops || !ops->alloc_con || !ops->accept_con)
+		return -EINVAL;
+
+	if (msgr->con_ops)
+		return -EALREADY;
+
+	msgr->con_ops = ops;
+
+	/* Avoid unaligned access by pointer warn because of packed struct */
+	addr = msgr->inst.addr.in_addr;
+
+	ret = sock_create_kern(read_pnet(&msgr->net),
+			       addr.ss_family, SOCK_STREAM,
+			       IPPROTO_TCP, &msgr->listen_sock);
+	if (ret) {
+		pr_err("failed to create a socket: %d\n", ret);
+		return ret;
+	}
+
+	sock = msgr->listen_sock;
+	sock->sk->sk_user_data = msgr;
+	msgr->def_data_ready = sock->sk->sk_data_ready;
+	sock->sk->sk_data_ready = ceph_sock_listen_data_ready;
+
+	if (ceph_test_opt(msgr->options, TCP_NODELAY)) {
+		opt = 1;
+		ret = kernel_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+					(char *)&opt, sizeof(opt));
+		if (ret) {
+			pr_err("failed to set TCP_NODELAY sock opt %d\n", ret);
+			goto err_sock;
+		}
+	}
+
+	opt = 1;
+	ret = kernel_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+				(char *)&opt, sizeof(opt));
+	if (ret) {
+		pr_err("failed to set SO_REUSEADDR sock opt %d\n", ret);
+		goto err_sock;
+	}
+
+	ret = kernel_bind(sock, (struct sockaddr *)&addr,
+			  sizeof(addr));
+	if (ret) {
+		pr_err("failed to bind port socket %d\n", ret);
+		goto err_sock;
+	}
+
+	ret = kernel_listen(sock, 128);
+	if (ret) {
+		pr_err("failed to listen %d on port sock\n", ret);
+		goto err_sock;
+	}
+
+	return 0;
+
+err_sock:
+	sock_release(sock);
+	msgr->def_data_ready = NULL;
+	msgr->listen_sock = NULL;
+	msgr->con_ops = NULL;
+
+	return ret;
+
+}
+EXPORT_SYMBOL(ceph_messenger_start_listen);
+
+/*
+ * Stops listening. Function does not take any locks, so* should not be
+ * concurrently called with itself or with *_start_listen().
+ *
+ * Note: can't be called from ->accept_con() callback or dead lock
+ *       will happen.
+ */
+void ceph_messenger_stop_listen(struct ceph_messenger *msgr)
+{
+	if (!msgr->con_ops)
+		return;
+
+	/*
+	 * Reset user data and forward all possible following data
+	 * readiness calls to default callback.  This lets safe
+	 * module unload.
+	 */
+
+	write_lock_bh(&msgr->listen_sock->sk->sk_callback_lock);
+	msgr->listen_sock->sk->sk_user_data = NULL;
+	msgr->listen_sock->sk->sk_data_ready = msgr->def_data_ready;
+	write_unlock_bh(&msgr->listen_sock->sk->sk_callback_lock);
+	cancel_work_sync(&msgr->accept_work);
+
+	sock_release(msgr->listen_sock);
+	msgr->listen_sock = NULL;
+	msgr->con_ops = NULL;
+	msgr->def_data_ready = NULL;
+}
+EXPORT_SYMBOL(ceph_messenger_stop_listen);
 
 static void msg_con_set(struct ceph_msg *msg, struct ceph_connection *con)
 {

@@ -21,6 +21,7 @@
 
 struct ceph_msg;
 struct ceph_connection;
+struct ceph_messenger;
 
 /*
  * Ceph defines these callbacks for handling connection events.
@@ -28,6 +29,10 @@ struct ceph_connection;
 struct ceph_connection_operations {
 	struct ceph_connection *(*get)(struct ceph_connection *);
 	void (*put)(struct ceph_connection *);
+
+	/* Connection allocation and accept for a server side */
+	struct ceph_connection *(*alloc_con)(struct ceph_messenger *);
+	int (*accept_con)(struct ceph_connection *);
 
 	/* handle an incoming message. */
 	void (*dispatch) (struct ceph_connection *con, struct ceph_msg *m);
@@ -81,6 +86,11 @@ struct ceph_messenger {
 	 */
 	u32 global_seq;
 	spinlock_t global_seq_lock;
+
+	struct work_struct accept_work;
+	struct socket *listen_sock;
+	void (*def_data_ready)(struct sock *sk);
+	const struct ceph_connection_operations *con_ops;
 };
 
 enum ceph_msg_data_type {
@@ -369,6 +379,9 @@ extern void ceph_messenger_init(struct ceph_messenger *msgr,
 				u64 sup_features, u64 req_featuress);
 extern void ceph_messenger_fini(struct ceph_messenger *msgr);
 extern void ceph_messenger_reset_nonce(struct ceph_messenger *msgr);
+extern int ceph_messenger_start_listen(struct ceph_messenger *msgr,
+				const struct ceph_connection_operations *ops);
+extern void ceph_messenger_stop_listen(struct ceph_messenger *msgr);
 
 extern void ceph_con_init(struct ceph_connection *con, void *private,
 			const struct ceph_connection_operations *ops,
