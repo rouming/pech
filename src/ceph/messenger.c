@@ -23,6 +23,7 @@
 #include "random.h"
 #include "gfp.h"
 #include "bitops.h"
+#include "rwlock.h"
 
 #include "ceph/ceph_features.h"
 #include "ceph/libceph.h"
@@ -394,22 +395,31 @@ static bool con_is_client(struct ceph_connection *con)
 /* data available on socket, or listen socket received a connect */
 static void ceph_sock_data_ready(struct sock *sk)
 {
-	struct ceph_connection *con = sk->sk_user_data;
-	if (atomic_read(&con->msgr->stopping)) {
-		return;
-	}
+	struct ceph_connection *con;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	con = sk->sk_user_data;
+	if (!con || atomic_read(&con->msgr->stopping))
+		goto unlock;
 
 	if (sk->sk_state != TCP_CLOSE_WAIT) {
 		dout("%s on %p state = %lu, queueing work\n", __func__,
 		     con, con->state);
 		queue_con(con);
 	}
+unlock:
+	read_unlock_bh(&sk->sk_callback_lock);
 }
 
 /* socket has buffer space for writing */
 static void ceph_sock_write_space(struct sock *sk)
 {
-	struct ceph_connection *con = sk->sk_user_data;
+	struct ceph_connection *con;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	con = sk->sk_user_data;
+	if (!con || atomic_read(&con->msgr->stopping))
+		goto unlock;
 
 	/* only queue to workqueue if there is data we want to write,
 	 * and there is sufficient space in the socket buffer to accept
@@ -427,15 +437,23 @@ static void ceph_sock_write_space(struct sock *sk)
 	} else {
 		dout("%s %p nothing to write\n", __func__, con);
 	}
+unlock:
+	read_unlock_bh(&sk->sk_callback_lock);
 }
 
 /* socket's state has changed */
 static void ceph_sock_state_change(struct sock *sk)
 {
-	struct ceph_connection *con = sk->sk_user_data;
+	struct ceph_connection *con;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	con = sk->sk_user_data;
 
 	dout("%s %p state = %lu sk_state = %u\n", __func__,
 	     con, con->state, sk->sk_state);
+
+	if (!con)
+		goto unlock;
 
 	switch (sk->sk_state) {
 	case TCP_CLOSE:
@@ -455,6 +473,8 @@ static void ceph_sock_state_change(struct sock *sk)
 	default:	/* Everything else is uninteresting */
 		break;
 	}
+unlock:
+	read_unlock_bh(&sk->sk_callback_lock);
 }
 
 /*
@@ -464,12 +484,33 @@ static void set_sock_callbacks(struct socket *sock,
 			       struct ceph_connection *con)
 {
 	struct sock *sk = sock->sk;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	con->def_data_ready = sk->sk_data_ready;
+	con->def_write_space = sk->sk_write_space;
+	con->def_state_change = sk->sk_state_change;
 	sk->sk_user_data = con;
 	sk->sk_data_ready = ceph_sock_data_ready;
 	sk->sk_write_space = ceph_sock_write_space;
 	sk->sk_state_change = ceph_sock_state_change;
+	read_unlock_bh(&sk->sk_callback_lock);
 }
 
+/*
+ * restore socket callbacks to previous values, should be called
+ * prior sock_release().
+ */
+static void restore_sock_callbacks(struct ceph_connection *con)
+{
+	struct sock *sk = con->sock->sk;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	sk->sk_user_data = NULL;
+	sk->sk_data_ready = con->def_data_ready;
+	sk->sk_write_space = con->def_write_space;
+	sk->sk_state_change = con->def_state_change;
+	read_unlock_bh(&sk->sk_callback_lock);
+}
 
 /*
  * socket helpers
@@ -632,6 +673,7 @@ static int con_close_socket(struct ceph_connection *con)
 	dout("con_close_socket on %p sock %p\n", con, con->sock);
 	if (con->sock) {
 		rc = con->sock->ops->shutdown(con->sock, SHUT_RDWR);
+		restore_sock_callbacks(con);
 		sock_release(con->sock);
 		con->sock = NULL;
 	}
