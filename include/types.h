@@ -91,7 +91,6 @@
 
 #define fault_in_pages_writeable(...) (0)
 
-//XXX
 typedef unsigned int gfp_t;
 
 typedef int8_t   __s8;
@@ -223,6 +222,8 @@ typedef unsigned int __bitwise slab_flags_t;
 #define READ			0
 #define WRITE			1
 
+// kernel.h
+
 /**
  * ARRAY_SIZE - get the number of elements in array @arr
  * @arr: array to be sized
@@ -237,8 +238,17 @@ typedef unsigned int __bitwise slab_flags_t;
 
 #define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
 
+#define __ALIGN_KERNEL(x, a)		__ALIGN_KERNEL_MASK(x, (typeof(x))(a) - 1)
+#define __ALIGN_KERNEL_MASK(x, mask)	(((x) + (mask)) & ~(mask))
 
-// kernel.h
+#define __KERNEL_DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+
+/* @a is a power of 2 value */
+#define ALIGN(x, a)		__ALIGN_KERNEL((x), (a))
+#define ALIGN_DOWN(x, a)	__ALIGN_KERNEL((x) - ((a) - 1), (a))
+#define __ALIGN_MASK(x, mask)	__ALIGN_KERNEL_MASK((x), (mask))
+#define PTR_ALIGN(p, a)		((typeof(p))ALIGN((unsigned long)(p), (a)))
+#define IS_ALIGNED(x, a)		(((x) & ((typeof(x))(a) - 1)) == 0)
 
 #define DIV64_U64_ROUND_UP(ll, d)	\
 	({ u64 _tmp = (d); div64_u64((ll) + _tmp - 1, _tmp); })

@@ -18,6 +18,9 @@ extern struct page empty_zero_page;
 
 #define ZERO_PAGE(vaddr) &empty_zero_page
 
+/* to align the pointer to the (next) page boundary */
+#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+
 #define page_address(p) ((p)->ptr)
 
 #define kmap(p) ((p)->ptr)
