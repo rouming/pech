@@ -27,30 +27,30 @@ What is not yet ported from kernel sources?
 
   o Crypto part is noop, thus monitors should be run with auth=none.
     To make cephx work direct copy-paste of kernel crypto sources
-	has to be done, or a wrapper over openssl lib should be written,
-	see src/ceph/crypto.c interface stubs for details.
+    has to be done, or a wrapper over openssl lib should be written,
+    see src/ceph/crypto.c interface stubs for details.
 
 What is the Great Idea behind?
 
   o I need easy hackable OSD in C with IO path only, without failover,
     log-based replication, PG layer and all other things. I want to
-	test different replication strategies (client-based, primary-copy,
-	chain) having simplest and fastest file storage (yes, step back to
-	filestore) which reads and writes directly to files.
+    test different replication strategies (client-based, primary-copy,
+    chain) having simplest and fastest file storage (yes, step back to
+    filestore) which reads and writes directly to files.
 
     Eventually this Pech OSD can be a starting point to something
-	different, something which is not RADOS, which is fast, with
-	minimum IO ordering requirements and acts as a RAID 1 cluster,
-	e.g. something which is described here [1].
+    different, something which is not RADOS, which is fast, with
+    minimum IO ordering requirements and acts as a RAID 1 cluster,
+    e.g. something which is described here [1].
 
 Make:
 
   $ make -j8
 
 Start new Ceph cluster with 1 OSD and then stop everything.  We start
-monitors on specified port and witg -X option, i.e. auth=none.
+monitors on specified port, proto v1 and with -X option, i.e. auth=none.
 
-  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=1 MGR=0 ../src/vstart.sh --memstore -n -X
+  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=1 MGR=0 ../src/vstart.sh --memstore -n -X --msgr1
   $ ../src/stop.sh
 
 Restart only Ceph monitor(s):
