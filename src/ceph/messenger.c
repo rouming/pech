@@ -3051,8 +3051,9 @@ more:
 		}
 		prepare_read_connect(con);
 
-		/* Send connection info before awaiting response */
-		goto out;
+		if (con_is_client(con))
+			/* Send connection info before awaiting response */
+			goto out;
 	}
 
 	if (con->state == CON_STATE_NEGOTIATING) {
