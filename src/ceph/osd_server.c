@@ -57,7 +57,6 @@ static void osds_free_con(struct kref *ref)
 	struct ceph_osds_con *osds_con;
 
 	osds_con = container_of(ref, typeof(*osds_con), ref);
-	ceph_con_close(&osds_con->con);
 	kfree(osds_con);
 }
 
@@ -132,8 +131,7 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 
 static void osds_fault(struct ceph_connection *con)
 {
-	pr_err("@@ %s\n", __func__);
-
+	ceph_con_close(con);
 	osds_con_put(con);
 }
 
