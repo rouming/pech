@@ -3372,6 +3372,10 @@ static void con_fault(struct ceph_connection *con)
 		con->in_msg = NULL;
 	}
 
+	if (!con_is_client(con))
+		/* For server we are done, no way for reopening the socket */
+		return;
+
 	/* Requeue anything that hasn't been acked */
 	list_splice_init(&con->out_sent, &con->out_queue);
 
