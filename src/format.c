@@ -71,7 +71,7 @@ static int inet_addr_printf_function (FILE *fp, const struct printf_info *info,
 		inet_ntop(af, *addr, buff, sizeof(buff));
 	} else {
 		if (*addr)
-			snprintf(buff, sizeof(buff), "0x%x", *addr);
+			snprintf(buff, sizeof(buff), "0x%lx", *addr);
 		else
 			snprintf(buff, sizeof(buff), "(nil)");
 	}
