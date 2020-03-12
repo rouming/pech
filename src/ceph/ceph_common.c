@@ -264,6 +264,7 @@ enum {
 	/* string args above */
 	Opt_share,
 	Opt_crc,
+	Opt_hdrcrc,
 	Opt_cephx_require_signatures,
 	Opt_cephx_sign_messages,
 	Opt_tcp_nodelay,
@@ -275,6 +276,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_flag_no ("cephx_require_signatures",	Opt_cephx_require_signatures),
 	fsparam_flag_no ("cephx_sign_messages",		Opt_cephx_sign_messages),
 	fsparam_flag_no ("crc",				Opt_crc),
+	fsparam_flag_no ("hdrcrc",			Opt_hdrcrc),
 	fsparam_string	("fsid",			Opt_fsid),
 	fsparam_string	("ip",				Opt_ip),
 	fsparam_string	("key",				Opt_key),
@@ -494,9 +496,15 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 		break;
 	case Opt_crc:
 		if (!result.negated)
-			opt->flags &= ~CEPH_OPT_NOCRC;
+			opt->flags &= ~CEPH_OPT_NO_DATA_CRC;
 		else
-			opt->flags |= CEPH_OPT_NOCRC;
+			opt->flags |= CEPH_OPT_NO_DATA_CRC;
+		break;
+	case Opt_hdrcrc:
+		if (!result.negated)
+			opt->flags &= ~CEPH_OPT_NO_HDR_CRC;
+		else
+			opt->flags |= CEPH_OPT_NO_HDR_CRC;
 		break;
 	case Opt_cephx_require_signatures:
 		if (!result.negated)
@@ -550,8 +558,10 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 		seq_printf(m, "fsid=%pU,", &opt->fsid);
 	if (opt->flags & CEPH_OPT_NOSHARE)
 		seq_puts(m, "noshare,");
-	if (opt->flags & CEPH_OPT_NOCRC)
+	if (opt->flags & CEPH_OPT_NO_DATA_CRC)
 		seq_puts(m, "nocrc,");
+	if (opt->flags & CEPH_OPT_NO_HDR_CRC)
+		seq_puts(m, "nohdrcrc,");
 	if (opt->flags & CEPH_OPT_NOMSGAUTH)
 		seq_puts(m, "nocephx_require_signatures,");
 	if (opt->flags & CEPH_OPT_NOMSGSIGN)

@@ -1347,8 +1347,9 @@ static void prepare_write_message_footer(struct ceph_connection *con)
  */
 static void prepare_write_message(struct ceph_connection *con)
 {
+	bool do_hdrcrc = !ceph_test_opt(con->msgr->options, NO_HDR_CRC);
 	struct ceph_msg *m;
-	u32 crc;
+	u32 crc = 0;
 
 	con_out_kvec_reset(con);
 	con->out_msg_done = false;
@@ -1400,15 +1401,23 @@ static void prepare_write_message(struct ceph_connection *con)
 		con_out_kvec_add(con, m->middle->vec.iov_len,
 			m->middle->vec.iov_base);
 
-	/* fill in hdr crc and finalize hdr */
-	crc = crc32c(0, &m->hdr, offsetof(struct ceph_msg_header, crc));
+	if (do_hdrcrc)
+		/* fill in hdr crc and finalize hdr */
+		crc = crc32c(0, &m->hdr, offsetof(struct ceph_msg_header, crc));
+	else
+		crc = 0;
+
 	con->out_msg->hdr.crc = cpu_to_le32(crc);
 	memcpy(&con->out_hdr, &con->out_msg->hdr, sizeof(con->out_hdr));
 
-	/* fill in front and middle crc, footer */
-	crc = crc32c(0, m->front.iov_base, m->front.iov_len);
+	if (do_hdrcrc)
+		/* fill in front and middle crc, footer */
+		crc = crc32c(0, m->front.iov_base, m->front.iov_len);
+	else
+		crc = 0;
+
 	con->out_msg->footer.front_crc = cpu_to_le32(crc);
-	if (m->middle) {
+	if (m->middle && do_hdrcrc) {
 		crc = crc32c(0, m->middle->vec.iov_base,
 				m->middle->vec.iov_len);
 		con->out_msg->footer.middle_crc = cpu_to_le32(crc);
@@ -1742,7 +1751,7 @@ static int write_partial_message_data(struct ceph_connection *con)
 {
 	struct ceph_msg *msg = con->out_msg;
 	struct ceph_msg_data_cursor *cursor = &msg->cursor;
-	bool do_datacrc = !ceph_test_opt(con->msgr->options, NOCRC);
+	bool do_datacrc = !ceph_test_opt(con->msgr->options, NO_DATA_CRC);
 	int more = MSG_MORE | MSG_SENDPAGE_NOTLAST;
 	u32 crc;
 
@@ -2628,8 +2637,14 @@ static int read_partial_message_section(struct ceph_connection *con,
 			return ret;
 		section->iov_len += ret;
 	}
-	if (section->iov_len == sec_len)
-		*crc = crc32c(0, section->iov_base, section->iov_len);
+	if (section->iov_len == sec_len) {
+		bool do_hdrcrc = !ceph_test_opt(con->msgr->options, NO_HDR_CRC);
+
+		if (do_hdrcrc)
+			*crc = crc32c(0, section->iov_base, section->iov_len);
+		else
+			*crc = 0;
+	}
 
 	return 1;
 }
@@ -2638,7 +2653,7 @@ static int read_partial_msg_data(struct ceph_connection *con)
 {
 	struct ceph_msg *msg = con->in_msg;
 	struct ceph_msg_data_cursor *cursor = &msg->cursor;
-	bool do_datacrc = !ceph_test_opt(con->msgr->options, NOCRC);
+	bool do_datacrc = !ceph_test_opt(con->msgr->options, NO_DATA_CRC);
 	struct page *page;
 	size_t page_offset;
 	size_t length;
@@ -2687,7 +2702,8 @@ static int read_partial_message(struct ceph_connection *con)
 	int end;
 	int ret;
 	unsigned int front_len, middle_len, data_len;
-	bool do_datacrc = !ceph_test_opt(con->msgr->options, NOCRC);
+	bool do_datacrc = !ceph_test_opt(con->msgr->options, NO_DATA_CRC);
+	bool do_hdrcrc = !ceph_test_opt(con->msgr->options, NO_HDR_CRC);
 	bool need_sign = (con->peer_features & CEPH_FEATURE_MSG_AUTH);
 	u64 seq;
 	u32 crc;
@@ -2701,7 +2717,12 @@ static int read_partial_message(struct ceph_connection *con)
 	if (ret <= 0)
 		return ret;
 
-	crc = crc32c(0, &con->in_hdr, offsetof(struct ceph_msg_header, crc));
+	if (do_hdrcrc)
+		crc = crc32c(0, &con->in_hdr,
+			     offsetof(struct ceph_msg_header, crc));
+	else
+		crc = 0;
+
 	if (cpu_to_le32(crc) != con->in_hdr.crc) {
 		pr_err("read_partial_message bad hdr crc %u != expected %u\n",
 		       crc, con->in_hdr.crc);

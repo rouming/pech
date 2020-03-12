@@ -33,11 +33,12 @@
 #define CEPH_OPT_FSID             (1<<0)
 #define CEPH_OPT_NOSHARE          (1<<1) /* don't share client with other sbs */
 #define CEPH_OPT_MYIP             (1<<2) /* specified my ip */
-#define CEPH_OPT_NOCRC            (1<<3) /* no data crc on writes */
-#define CEPH_OPT_NOMSGAUTH	  (1<<4) /* don't require msg signing feat */
-#define CEPH_OPT_TCP_NODELAY	  (1<<5) /* TCP_NODELAY on TCP sockets */
-#define CEPH_OPT_NOMSGSIGN	  (1<<6) /* don't sign msgs */
-#define CEPH_OPT_ABORT_ON_FULL	  (1<<7) /* abort w/ ENOSPC when full */
+#define CEPH_OPT_NO_DATA_CRC      (1<<3) /* no data crc on writes */
+#define CEPH_OPT_NO_HDR_CRC       (1<<4) /* no hdr crc on reads and writes */
+#define CEPH_OPT_NOMSGAUTH	  (1<<5) /* don't require msg signing feat */
+#define CEPH_OPT_TCP_NODELAY	  (1<<6) /* TCP_NODELAY on TCP sockets */
+#define CEPH_OPT_NOMSGSIGN	  (1<<7) /* don't sign msgs */
+#define CEPH_OPT_ABORT_ON_FULL	  (1<<8) /* abort w/ ENOSPC when full */
 
 #define CEPH_OPT_DEFAULT   (CEPH_OPT_TCP_NODELAY)
 
