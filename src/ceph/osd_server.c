@@ -382,6 +382,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		return -EINVAL;
 
 	src = *p;
+	*p += sizeof(*src);
 
 	dst->op = le16_to_cpu(src->op);
 	dst->flags = le32_to_cpu(src->flags);
@@ -523,20 +524,25 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	ceph_decode_64_safe(&p, end, req->snapid, bad); /* snapid */
 	ceph_decode_64_safe(&p, end, req->snap_seq, bad);
-	ceph_decode_64_safe(&p, end, req->num_snaps, bad);
+	ceph_decode_32_safe(&p, end, req->num_snaps, bad);
 	if (req->num_snaps > 1024) {
 		pr_err("%s: too big num_snaps %d\n",
 		       __func__, req->num_snaps);
 		goto err;
 	}
-	req->snaps = kmalloc_array(req->num_snaps, sizeof(*req->snaps),
-				   GFP_NOIO);
-	if (!req->snaps) {
-		ret = -ENOMEM;
-		goto err;
+
+	if (req->num_snaps) {
+		req->snaps = kmalloc_array(req->num_snaps,
+					   sizeof(*req->snaps),
+					   GFP_NOIO);
+		if (!req->snaps) {
+			ret = -ENOMEM;
+			goto err;
+		}
+
+		for (i = 0; i < req->num_snaps; i++)
+			ceph_decode_64_safe(&p, end, req->snaps[i], bad);
 	}
-	for (i = 0; i < req->num_snaps; i++)
-		ceph_decode_64_safe(&p, end, req->snaps[i], bad);
 
 	ceph_decode_32_safe(&p, end, req->attempts, bad);
 	ceph_decode_64_safe(&p, end, req->features, bad);
