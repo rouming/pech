@@ -213,6 +213,7 @@ int main(int argc, char **argv)
 	memset(&init, 0, sizeof(init));
 
 	init_formatting();
+	init_pages();
 	init_sched();
 	init_event();
 	init_workqueue();
@@ -248,6 +249,8 @@ int main(int argc, char **argv)
 	/* Run till the end */
 	while (tasks_to_run())
 		schedule();
+
+	deinit_pages();
 
 	return 0;
 }

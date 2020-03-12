@@ -39,6 +39,9 @@ static inline int page_count(struct page *page)
 #define get_page(p)
 #define put_page(p)
 
+extern void init_pages(void);
+extern void deinit_pages(void);
+
 extern struct page *alloc_pages(gfp_t gfp_mask, unsigned int order);
 
 static inline struct page *__page_cache_alloc(gfp_t gfp)
