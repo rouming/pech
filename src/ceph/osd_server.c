@@ -18,6 +18,12 @@
 #include "ceph/auth.h"
 #include "ceph/osdmap.h"
 
+enum {
+	OSDS_BLOCK_SHIFT    = 16, /* 64k, must be ^2 */
+	OSDS_BLOCK_SIZE     = (1UL << OSDS_BLOCK_SHIFT),
+	OSDS_BLOCK_MASK     = (~(OSDS_BLOCK_SIZE-1))
+};
+
 static const struct ceph_connection_operations osds_con_ops;
 
 /* XXX Probably need to be unified with ceph_osd_request */
@@ -42,6 +48,25 @@ struct ceph_msg_osd_op {
 struct ceph_osds_con {
 	struct ceph_connection con;
 	struct kref ref;
+};
+
+struct ceph_osd_server {
+	struct ceph_client     *client;
+	int                    osd;
+	struct rb_root         s_objects;  /* all objects */
+};
+
+struct ceph_osds_object {
+	struct rb_node         o_node;    /* node of ->s_objects */
+	struct ceph_hobject_id o_hoid;
+	struct rb_root         o_blocks;  /* all blocks of the object */
+	size_t                 o_size;    /* size of an object */
+};
+
+struct ceph_osds_block {
+	struct rb_node         b_node;    /* node of ->o_blocks */
+	struct page            *b_page;
+	off_t                  b_off;     /* offset inside a whole object */
 };
 
 static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
@@ -76,6 +101,18 @@ static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 
 	return 0;
 }
+
+/**
+ * Define RB functions for object lookup and insert by spgid,oid pair
+ */
+DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
+		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
+		 o_node);
+
+/**
+ * Define RB functions for object block lookup by offset
+ */
+DEFINE_RB_FUNCS(object_block_by_off, struct ceph_osds_block, b_off, b_node);
 
 static int osds_accept_con(struct ceph_connection *con)
 {
@@ -546,22 +583,185 @@ bad:
 	goto err;
 }
 
+static inline struct ceph_osd_server *con_to_osds(struct ceph_connection *con)
+{
+	struct ceph_client *client =
+		container_of(con->msgr, typeof(*client), msgr);
+
+	return client->private;
+}
+
+static inline struct ceph_osd_client *con_to_osdc(struct ceph_connection *con)
+{
+	struct ceph_client *client =
+		container_of(con->msgr, typeof(*client), msgr);
+
+	return &client->osdc;
+}
+
+static inline int next_dst(struct ceph_osd_req_op *op,
+			   struct ceph_osds_object *obj,
+			   struct ceph_osds_block **pblk,
+			   off_t dst_off,
+			   size_t *dst_len)
+{
+	struct ceph_osds_block *blk;
+	off_t blk_off;
+
+	blk_off = ALIGN_DOWN(dst_off, OSDS_BLOCK_SIZE);
+	blk = lookup_object_block_by_off(&obj->o_blocks, blk_off);
+	if (!blk) {
+		unsigned int order;
+
+		blk = kmalloc(sizeof(*blk), GFP_KERNEL);
+		if (!blk)
+			return -ENOMEM;
+
+		RB_CLEAR_NODE(&blk->b_node);
+		order = OSDS_BLOCK_SHIFT - PAGE_SHIFT;
+		blk->b_page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+		blk->b_off = blk_off;
+
+		if (!blk->b_page) {
+			kfree(blk);
+			return -ENOMEM;
+		}
+
+		insert_object_block_by_off(&obj->o_blocks, blk);
+	}
+
+	*dst_len = OSDS_BLOCK_SIZE - (dst_off & ~OSDS_BLOCK_MASK);
+	*pblk = blk;
+
+
+	return 0;
+}
+
+static int handle_osd_op_write(struct ceph_msg *msg,
+			       struct ceph_msg_osd_op *req,
+			       struct ceph_osd_req_op *op)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_msg_data *data = &msg->data[0];
+	struct ceph_bvec_iter *bvec_pos;
+	struct ceph_osds_object *obj;
+	struct ceph_osds_block *blk;
+
+	size_t len_write, dst_len;
+	off_t dst_off;
+
+	if (!op->extent.length)
+		/* Nothing to do */
+		return 0;
+
+	/* See osds_alloc_msg() */
+	BUG_ON(msg->num_data_items != 1);
+	BUG_ON(data->type != CEPH_MSG_DATA_BVECS);
+
+	bvec_pos = &data->bvec_pos;
+
+	/*
+	 * Find or create an object by pg,oid pair
+	 */
+	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	if (!obj) {
+		obj = kmalloc(sizeof(*obj), GFP_KERNEL);
+		if (!obj)
+			return -ENOMEM;
+
+		obj->o_size = 0;
+		obj->o_blocks = RB_ROOT;
+		RB_CLEAR_NODE(&obj->o_node);
+		ceph_hoid_init(&obj->o_hoid);
+		ceph_hoid_copy(&obj->o_hoid, &req->hoid);
+		insert_object_by_hoid(&osds->s_objects, obj);
+	}
+
+	/*
+	 * Fill in blocks with data of found/created object
+	 */
+	len_write = op->extent.length;
+	dst_off = op->extent.offset;
+	blk = NULL;
+	dst_len = 0;
+
+	while (len_write) {
+		void *src, *dst;
+		size_t len;
+
+		if (!dst_len) {
+			int ret;
+
+			ret = next_dst(op, obj, &blk, dst_off, &dst_len);
+			if (ret)
+				return ret;
+		}
+
+		len = min_t(size_t, dst_len, mp_bvec_iter_len(bvec_pos->bvecs,
+							      bvec_pos->iter));
+		len = min(len, len_write);
+
+		src = page_address(mp_bvec_iter_page(bvec_pos->bvecs,
+						     bvec_pos->iter));
+		dst = page_address(blk->b_page);
+
+		memcpy(dst + (dst_off & ~OSDS_BLOCK_MASK),
+		       src + mp_bvec_iter_offset(bvec_pos->bvecs,
+						 bvec_pos->iter),
+		       len);
+
+		ceph_bvec_iter_advance(bvec_pos, len);
+		len_write -= len;
+		dst_len -= len;
+		dst_off += len;
+
+		/* Extend object size if needed */
+		if (dst_off > obj->o_size)
+			obj->o_size = dst_off;
+	}
+
+	return 0;
+}
+
+static int handle_osd_op_read(struct ceph_msg *msg,
+			      struct ceph_msg_osd_op *req,
+			      struct ceph_osd_req_op *op)
+{
+	return 0;
+}
+
 static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 {
-	struct ceph_client *client;
-	struct ceph_osd_client *osdc;
+	struct ceph_osd_client *osdc = con_to_osdc(con);
 	struct ceph_msg_osd_op req;
 	struct ceph_msg *reply;
-	int ret;
-
-	client = container_of(con->msgr, typeof(*client), msgr);
-	osdc = &client->osdc;
+	int ret, i;
 
 	ret = ceph_decode_msg_osd_op(msg, &req);
 	if (unlikely(ret)) {
 		pr_err("%s: con %p, failed to decode a message, ret=%d\n",
 		       __func__, con, ret);
 		return;
+	}
+
+	/* Iterate over all operations */
+	for (i = 0; i < req.num_ops; i++) {
+		struct ceph_osd_req_op *op = &req.ops[i];
+
+		switch (op->op) {
+		case CEPH_OSD_OP_WRITE:
+			ret = handle_osd_op_write(msg, &req, op);
+			break;
+		case CEPH_OSD_OP_READ:
+			ret = handle_osd_op_read(msg, &req, op);
+			break;
+		default:
+			pr_err("%s: unknown op[%d] type 0x%x\n",
+			       __func__, i, op->op);
+			ret = -EOPNOTSUPP;
+			break;
+		}
+		op->rval = ret;
 	}
 
 	/* XXX Immediately reply with ACK */
@@ -663,6 +863,7 @@ ceph_create_osd_server(struct ceph_options *opt, int osd)
 		return ERR_PTR(-ENOMEM);
 
 	osds->osd = osd;
+	osds->s_objects = RB_ROOT;
 
 	client = __ceph_create_client(opt, osds, CEPH_ENTITY_TYPE_OSD,
 				      osd, CEPH_FEATURES_SUPPORTED_OSD,
@@ -716,10 +917,35 @@ static void ceph_stop_osd_server(struct ceph_osd_server *osds)
 		pr_notice(">>>> Tear down osd.%d\n", osds->osd);
 }
 
+static void destroy_blocks(struct ceph_osds_object *obj)
+{
+	struct ceph_osds_block *blk;
+
+	while ((blk = rb_entry_safe(rb_first(&obj->o_blocks),
+				    typeof(*blk), b_node))) {
+		erase_object_block_by_off(&obj->o_blocks, blk);
+		__free_pages(blk->b_page, OSDS_BLOCK_SHIFT - PAGE_SHIFT);
+		kfree(blk);
+	}
+}
+
+static void destroy_objects(struct ceph_osd_server *osds)
+{
+	struct ceph_osds_object *obj;
+
+	while ((obj = rb_entry_safe(rb_first(&osds->s_objects),
+				    typeof(*obj), o_node))) {
+		destroy_blocks(obj);
+		erase_object_by_hoid(&osds->s_objects, obj);
+		kfree(obj);
+	}
+}
+
 void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 {
 	ceph_stop_osd_server(osds);
 	ceph_destroy_client(osds->client);
+	destroy_objects(osds);
 	kfree(osds);
 }
 

@@ -6,10 +6,7 @@
 #include "ceph/osdmap.h"
 #include "ceph/messenger.h"
 
-struct ceph_osd_server {
-	struct ceph_client *client;
-	int                osd;
-};
+struct ceph_osd_server;
 
 extern struct ceph_osd_server *ceph_create_osd_server(
 	struct ceph_options *opt, int osd);
