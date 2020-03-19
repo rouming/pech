@@ -1131,12 +1131,19 @@ int ceph_monc_osd_mark_me_down(struct ceph_mon_client *monc, int osd_id)
 
 	struct ceph_mon_generic_request *req;
 	void *p, *end;
+	int ret;
 
-	int ret = -ENOMEM;
+	if (monc->hunting)
+		/*
+		 * Check a variable even without a lock, just leave
+		 * the function immediately if not connected.
+		 */
+		return -ENOTCONN;
 
+	ret = -ENOMEM;
 	req = alloc_generic_request(monc, GFP_NOIO);
 	if (!req)
-		goto out;
+		return ret;
 
 	req->request = ceph_msg_new(CEPH_MSG_OSD_MARK_ME_DOWN, 256,
 				    GFP_NOIO, true);
