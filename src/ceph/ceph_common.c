@@ -269,6 +269,7 @@ enum {
 	Opt_cephx_sign_messages,
 	Opt_tcp_nodelay,
 	Opt_abort_on_full,
+	Opt_noop_write,
 };
 
 static const struct fs_parameter_spec ceph_parameters[] = {
@@ -290,6 +291,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_string	("secret",			Opt_secret),
 	fsparam_flag_no ("share",			Opt_share),
 	fsparam_flag_no ("tcp_nodelay",			Opt_tcp_nodelay),
+	fsparam_flag	("noop_write",			Opt_noop_write),
 	{}
 };
 
@@ -527,6 +529,10 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 
 	case Opt_abort_on_full:
 		opt->flags |= CEPH_OPT_ABORT_ON_FULL;
+		break;
+
+	case Opt_noop_write:
+		opt->flags |= CEPH_OPT_NOOP_WRITE;
 		break;
 
 	default:

@@ -690,6 +690,11 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 		/* Nothing to do */
 		return 0;
 
+	if (ceph_test_opt(msg->con->msgr->options, NOOP_WRITE) &&
+	    op->extent.length >= 4096)
+		/* Write is noop */
+		return 0;
+
 	/* See osds_alloc_msg() */
 	BUG_ON(msg->num_data_items != 1);
 	BUG_ON(data->type != CEPH_MSG_DATA_BVECS);
