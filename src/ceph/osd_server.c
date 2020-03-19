@@ -759,10 +759,121 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	return 0;
 }
 
+static struct ceph_osds_block *lookup_right_block(struct rb_root *root,
+						  off_t off)
+{
+	struct ceph_osds_block *right = NULL;
+	struct rb_node *n = root->rb_node;
+	int cmp = 0;
+
+	while (n) {
+		struct ceph_osds_block *blk;
+
+		blk = rb_entry(n, typeof(*blk), b_node);
+		cmp = RB_CMP3WAY(off, blk->b_off);
+		if (cmp < 0) {
+			right = blk;
+			n = n->rb_left;
+		}
+		else if (cmp > 0) {
+			n = n->rb_right;
+		} else {
+			return blk;
+		}
+	}
+
+	return right;
+}
+
 static int handle_osd_op_read(struct ceph_msg *msg,
 			      struct ceph_msg_osd_op *req,
 			      struct ceph_osd_req_op *op)
 {
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_osds_object *obj;
+	struct ceph_osds_block *blk;
+	off_t off, blk_off;
+	size_t len_read;
+	unsigned off_inpg;
+	int ret;
+
+	struct ceph_bvec_iter it;
+
+	/*
+	 * Find an object by pg,oid pair
+	 */
+	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	if (!obj)
+		return -ENOENT;
+
+	if (op->extent.offset >= obj->o_size)
+		/* Offset if beyond the object, nothing to do */
+		return 0;
+
+	len_read = min(op->extent.length, obj->o_size - op->extent.offset);
+
+	/* Allocate bvec for the read chunk */
+	ret = alloc_bvec(&it, len_read);
+	if (ret)
+		return ret;
+
+	/* Give ownership to msg */
+	ceph_osd_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
+
+	/* Setup output length */
+	op->outdata_len = len_read;
+
+	off_inpg = 0;
+	off = op->extent.offset;
+	blk_off = ALIGN_DOWN(off, OSDS_BLOCK_SIZE);
+	blk = lookup_right_block(&obj->o_blocks, blk_off);
+	while (blk && len_read) {
+		/* Found block is exactly we were looking for or to the right */
+		BUG_ON(blk->b_off < blk_off);
+
+		/* Zero out a possible hole before block */
+		if (blk->b_off > off) {
+			size_t len_zero = blk->b_off - off;
+
+			len_zero = min(len_zero, len_read);
+			memset(page_address(it.bvecs->bv_page) + off_inpg,
+			       0, len_zero);
+
+			len_read -= len_zero;
+			off_inpg += len_zero;
+			off += len_zero;
+		}
+
+		/* Copy block */
+		if (len_read) {
+			void *dst = page_address(it.bvecs->bv_page);
+			void *src = page_address(blk->b_page);
+			off_t off_inblk = off & ~OSDS_BLOCK_MASK;
+			size_t len_copy;
+
+			len_copy = min((size_t)OSDS_BLOCK_SIZE - off_inblk,
+				       len_read);
+
+			memcpy(dst + off_inpg, src + off_inblk,
+			       len_copy);
+
+			len_read -= len_copy;
+			off_inpg += len_copy;
+			off += len_copy;
+		}
+
+		/* Get the next block */
+		if (len_read) {
+			blk = rb_entry_safe(rb_next(&blk->b_node),
+					    typeof(*blk), b_node);
+		}
+	}
+
+	if (len_read)
+		/* Zero out the rest */
+		memset(page_address(it.bvecs->bv_page) + off_inpg,
+		       0, len_read);
+
 	return 0;
 }
 
@@ -800,9 +911,11 @@ static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 		op->rval = ret;
 	}
 
-	/* XXX Immediately reply with ACK */
+	/* Create reply message */
 	reply = create_osd_op_reply(&req, 0, osdc->osdmap->epoch,
-				CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+			/* TODO: Not actually clear to me when to set those */
+			CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+
 	deinit_msg_osd_op(&req);
 
 	if (unlikely(!reply)) {
