@@ -35,7 +35,7 @@ static struct ceph_connection *osds_alloc_con(struct ceph_messenger *msgr)
 {
 	struct ceph_osds_con *osds_con;
 
-	osds_con = kzalloc(sizeof(*osds_con), GFP_NOIO | __GFP_NOFAIL);
+	osds_con = kzalloc(sizeof(*osds_con), GFP_KERNEL | __GFP_NOFAIL);
 	if (unlikely(!osds_con))
 		return NULL;
 
@@ -221,7 +221,7 @@ create_osd_op_reply(const struct ceph_msg_osd_op *req,
 	msg_size += 1; /* do_redirect */
 
 	msg = ceph_msg_new2(CEPH_MSG_OSD_OPREPLY, msg_size,
-			    0, GFP_NOIO, false);
+			    0, GFP_KERNEL, false);
 	if (!msg)
 		return NULL;
 
@@ -505,7 +505,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	ceph_decode_32_safe(&p, end, strlen, bad);
 	ceph_decode_need(&p, end, strlen, bad);
-	ret = ceph_oid_aprintf(&req->oid, GFP_NOIO, "%s", p);
+	ret = ceph_oid_aprintf(&req->oid, GFP_KERNEL, "%s", p);
 	p += strlen;
 	if (ret)
 		goto err;
@@ -534,7 +534,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 	if (req->num_snaps) {
 		req->snaps = kmalloc_array(req->num_snaps,
 					   sizeof(*req->snaps),
-					   GFP_NOIO);
+					   GFP_KERNEL);
 		if (!req->snaps) {
 			ret = -ENOMEM;
 			goto err;
@@ -611,7 +611,7 @@ static struct ceph_msg *alloc_msg_with_page_vector(struct ceph_msg_header *hdr)
 	u32 front_len = le32_to_cpu(hdr->front_len);
 	u32 data_len = le32_to_cpu(hdr->data_len);
 
-	m = ceph_msg_new2(type, front_len, 1, GFP_NOIO, false);
+	m = ceph_msg_new2(type, front_len, 1, GFP_KERNEL, false);
 	if (!m)
 		return NULL;
 
