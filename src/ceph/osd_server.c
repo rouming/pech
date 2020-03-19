@@ -914,10 +914,18 @@ static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 			break;
 		}
 		op->rval = ret;
+
+		if (ret && (op->flags & CEPH_OSD_OP_FLAG_FAILOK) &&
+		    ret != -EAGAIN && ret != -EINPROGRESS)
+			/* Ignore op error and continue executing */
+			ret = 0;
+
+		if (ret)
+			break;
 	}
 
 	/* Create reply message */
-	reply = create_osd_op_reply(&req, 0, osdc->osdmap->epoch,
+	reply = create_osd_op_reply(&req, ret, osdc->osdmap->epoch,
 			/* TODO: Not actually clear to me when to set those */
 			CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
 
