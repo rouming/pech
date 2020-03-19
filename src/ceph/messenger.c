@@ -24,6 +24,7 @@
 #include "gfp.h"
 #include "bitops.h"
 #include "rwlock.h"
+#include "getorder.h"
 
 #include "ceph/ceph_features.h"
 #include "ceph/libceph.h"
@@ -3859,6 +3860,20 @@ static struct ceph_msg_data *ceph_msg_data_add(struct ceph_msg *msg)
 	return &msg->data[msg->num_data_items++];
 }
 
+static void ceph_bvecs_release(struct ceph_bvec_iter *bvec_pos,
+			       unsigned int num_bvecs)
+{
+	struct bio_vec *bvec;
+	unsigned int i;
+
+	for (i = 0; i < num_bvecs; i++) {
+		bvec = &bvec_pos->bvecs[i];
+		__free_pages(bvec->bv_page, get_order(bvec->bv_len));
+	}
+	kfree(bvec_pos->bvecs);
+	bvec_pos->bvecs = NULL;
+}
+
 static void ceph_msg_data_destroy(struct ceph_msg_data *data)
 {
 	if (data->type == CEPH_MSG_DATA_PAGES && data->own_pages) {
@@ -3866,6 +3881,8 @@ static void ceph_msg_data_destroy(struct ceph_msg_data *data)
 		ceph_release_page_vector(data->pages, num_pages);
 	} else if (data->type == CEPH_MSG_DATA_PAGELIST) {
 		ceph_pagelist_release(data->pagelist);
+	} else if (data->type == CEPH_MSG_DATA_BVECS && data->own_bvecs) {
+		ceph_bvecs_release(&data->bvec_pos, data->num_bvecs);
 	}
 }
 
@@ -3922,13 +3939,16 @@ EXPORT_SYMBOL(ceph_msg_data_add_bio);
 #endif	/* CONFIG_BLOCK */
 
 void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
-			     struct ceph_bvec_iter *bvec_pos)
+			     struct ceph_bvec_iter *bvec_pos,
+			     unsigned int num_bvecs, bool own_bvecs)
 {
 	struct ceph_msg_data *data;
 
 	data = ceph_msg_data_add(msg);
 	data->type = CEPH_MSG_DATA_BVECS;
 	data->bvec_pos = *bvec_pos;
+	data->num_bvecs = num_bvecs;
+	data->own_bvecs = own_bvecs;
 
 	msg->data_length += bvec_pos->iter.bi_size;
 }

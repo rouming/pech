@@ -194,7 +194,11 @@ struct ceph_msg_data {
 			u32			bio_length;
 		};
 #endif /* CONFIG_BLOCK */
-		struct ceph_bvec_iter	bvec_pos;
+		struct {
+			struct ceph_bvec_iter	bvec_pos;
+			unsigned int            num_bvecs;
+			bool		        own_bvecs;
+		};
 		struct {
 			struct page	**pages;
 			size_t		length;		/* total # bytes */
@@ -410,7 +414,8 @@ void ceph_msg_data_add_bio(struct ceph_msg *msg, struct ceph_bio_iter *bio_pos,
 			   u32 length);
 #endif /* CONFIG_BLOCK */
 void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
-			     struct ceph_bvec_iter *bvec_pos);
+			     struct ceph_bvec_iter *bvec_pos,
+			     unsigned int num_bvec, bool own_bvec);
 
 struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
 			       gfp_t flags, bool can_fail);

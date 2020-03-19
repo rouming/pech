@@ -82,6 +82,7 @@ struct ceph_osd_data {
 		struct {
 			struct ceph_bvec_iter	bvec_pos;
 			u32			num_bvecs;
+			bool			own_bvecs;
 		};
 	};
 };
@@ -440,7 +441,7 @@ void osd_req_op_extent_osd_data_bio(struct ceph_osd_request *osd_req,
 void osd_req_op_extent_osd_data_bvecs(struct ceph_osd_request *osd_req,
 				      unsigned int which,
 				      struct bio_vec *bvecs, u32 num_bvecs,
-				      u32 bytes);
+				      u32 bytes, bool own_bvecs);
 void osd_req_op_extent_osd_data_bvec_pos(struct ceph_osd_request *osd_req,
 					 unsigned int which,
 					 struct ceph_bvec_iter *bvec_pos);
@@ -471,6 +472,12 @@ extern void osd_req_op_alloc_hint_init(struct ceph_osd_request *osd_req,
 				       unsigned int which,
 				       u64 expected_object_size,
 				       u64 expected_write_size);
+
+extern void ceph_osdc_msg_data_add(struct ceph_msg *msg,
+				   struct ceph_osd_data *osd_data);
+extern void ceph_osd_data_bvecs_init(struct ceph_osd_data *osd_data,
+				     struct ceph_bvec_iter *bvec_pos,
+				     u32 num_bvecs, bool own_bvecs);
 
 extern struct ceph_osd_request *ceph_osdc_alloc_request(struct ceph_osd_client *osdc,
 					       struct ceph_snap_context *snapc,
