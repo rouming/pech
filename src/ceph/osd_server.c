@@ -5,6 +5,7 @@
 #include "module.h"
 #include "err.h"
 #include "slab.h"
+#include "getorder.h"
 
 #include "semaphore.h"
 
@@ -23,6 +24,39 @@ struct ceph_osds_con {
 	struct ceph_connection con;
 	struct kref ref;
 };
+
+static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
+{
+	struct bio_vec *bvec;
+	struct page *page;
+	unsigned order;
+
+	/*
+	 * Allocate the whole chunk at once.  Not acceptable for
+	 * kernel side, for sure, because order can be too high,
+	 * but for now is fine.
+	 */
+	order = get_order(data_len);
+	page = alloc_pages(GFP_KERNEL, order);
+	if (!page)
+		return -ENOMEM;
+
+	bvec = kmalloc(sizeof(*bvec), GFP_KERNEL);
+	if (!bvec) {
+		__free_pages(page, order);
+		return -ENOMEM;
+	}
+	*bvec = (struct bio_vec) {
+		.bv_page = page,
+		.bv_len  = 1 << order << PAGE_SHIFT,
+	};
+	*it = (struct ceph_bvec_iter) {
+		.bvecs = bvec,
+		.iter = { .bi_size = data_len },
+	};
+
+	return 0;
+}
 
 static int osds_accept_con(struct ceph_connection *con)
 {
@@ -604,7 +638,7 @@ static void osds_dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 	ceph_msg_put(msg);
 }
 
-static struct ceph_msg *alloc_msg_with_page_vector(struct ceph_msg_header *hdr)
+static struct ceph_msg *alloc_msg_with_bvec(struct ceph_msg_header *hdr)
 {
 	struct ceph_msg *m;
 	int type = le16_to_cpu(hdr->type);
@@ -616,16 +650,17 @@ static struct ceph_msg *alloc_msg_with_page_vector(struct ceph_msg_header *hdr)
 		return NULL;
 
 	if (data_len) {
-		struct page **pages;
+		struct ceph_bvec_iter it;
+		int ret;
 
-		pages = ceph_alloc_page_vector(calc_pages_for(0, data_len),
-					       GFP_NOIO);
-		if (IS_ERR(pages)) {
+		ret = alloc_bvec(&it, data_len);
+		if (ret) {
 			ceph_msg_put(m);
 			return NULL;
 		}
 
-		ceph_msg_data_add_pages(m, pages, data_len, 0, true);
+		/* Give ownership to msg */
+		ceph_msg_data_add_bvecs(m, &it, 1, true);
 	}
 
 	return m;
@@ -643,7 +678,7 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_OSD_BACKOFF:
 	case CEPH_MSG_WATCH_NOTIFY:
 	case CEPH_MSG_OSD_OP:
-		return alloc_msg_with_page_vector(hdr);
+		return alloc_msg_with_bvec(hdr);
 	case CEPH_MSG_OSD_OPREPLY:
 		/* fall through */
 	default:
