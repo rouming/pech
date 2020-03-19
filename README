@@ -22,6 +22,13 @@ What this noop OSD does?
 
   o Connects to monitors and "boots" OSD, i.e. marks it as UP.
   o On Ctrl+C marks OSD on monitors as DOWN and gracefully exits.
+  o OSD operations supported in memory:
+
+     - OP_WRITE
+     - OP_READ
+     - OP_STAT
+
+  So simple fio/examples/rados.fio load can be run.
 
 What is not yet ported from kernel sources?
 
