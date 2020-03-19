@@ -187,6 +187,7 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 
 	switch (src->op) {
 	case CEPH_OSD_OP_STAT:
+		data = &src->raw_data_in;
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_WRITE:
@@ -438,6 +439,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 
 	switch (dst->op) {
 	case CEPH_OSD_OP_STAT:
+		dst->raw_data_in.type = CEPH_OSD_DATA_TYPE_NONE;
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_WRITE:
@@ -889,6 +891,46 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	return 0;
 }
 
+static int handle_osd_op_stat(struct ceph_msg *msg,
+			      struct ceph_msg_osd_op *req,
+			      struct ceph_osd_req_op *op)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_osds_object *obj;
+	struct ceph_bvec_iter it;
+	struct ceph_timespec ts;
+	size_t outdata_len;
+	void *p;
+	int ret;
+
+	/*
+	 * Find an object by pg,oid pair
+	 */
+	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	if (!obj)
+		return -ENOENT;
+
+	outdata_len = 8 + sizeof(ts);
+
+	/* Allocate bvec for the read chunk */
+	ret = alloc_bvec(&it, outdata_len);
+	if (ret)
+		return ret;
+
+	/* Setup output length */
+	op->outdata_len = outdata_len;
+
+	/* Give ownership to msg */
+	ceph_osd_data_bvecs_init(&op->raw_data_in, &it, 1, true);
+
+	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
+	ceph_encode_timespec64(&ts, &obj->o_mtime);
+	ceph_encode_64(p, obj->o_size);
+	ceph_encode_copy(&p, &ts, sizeof(ts));
+
+	return 0;
+}
+
 static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 {
 	struct ceph_osd_client *osdc = con_to_osdc(con);
@@ -913,6 +955,9 @@ static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 			break;
 		case CEPH_OSD_OP_READ:
 			ret = handle_osd_op_read(msg, &req, op);
+			break;
+		case CEPH_OSD_OP_STAT:
+			ret = handle_osd_op_stat(msg, &req, op);
 			break;
 		default:
 			pr_err("%s: unknown op[%d] type 0x%x\n",
