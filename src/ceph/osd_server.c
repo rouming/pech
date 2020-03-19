@@ -360,7 +360,7 @@ static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 	req->snaps = NULL;
 }
 
-static void free_msg_osd_op(struct ceph_msg_osd_op *req)
+static void deinit_msg_osd_op(struct ceph_msg_osd_op *req)
 {
 	ceph_oloc_destroy(&req->oloc);
 	ceph_hoid_destroy(&req->hoid);
@@ -576,7 +576,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	return 0;
 err:
-	free_msg_osd_op(req);
+	deinit_msg_osd_op(req);
 	return ret;
 bad:
 	ret = -EINVAL;
@@ -767,7 +767,8 @@ static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 	/* XXX Immediately reply with ACK */
 	reply = create_osd_op_reply(&req, 0, osdc->osdmap->epoch,
 				CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
-	free_msg_osd_op(&req);
+	deinit_msg_osd_op(&req);
+
 	if (unlikely(!reply)) {
 		pr_err("%s: con %p, failed to allocate a reply\n",
 		       __func__, con);
