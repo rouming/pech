@@ -61,6 +61,7 @@ struct ceph_osds_object {
 	struct ceph_hobject_id o_hoid;
 	struct rb_root         o_blocks;  /* all blocks of the object */
 	size_t                 o_size;    /* size of an object */
+	struct timespec64      o_mtime;   /* modification time of an object */
 };
 
 struct ceph_osds_block {
@@ -686,6 +687,9 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	size_t len_write, dst_len;
 	off_t dst_off;
 
+	bool modified = false;
+	int ret;
+
 	if (!op->extent.length)
 		/* Nothing to do */
 		return 0;
@@ -725,17 +729,16 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	dst_off = op->extent.offset;
 	blk = NULL;
 	dst_len = 0;
+	ret = 0;
 
 	while (len_write) {
 		void *src, *dst;
 		size_t len;
 
 		if (!dst_len) {
-			int ret;
-
 			ret = next_dst(op, obj, &blk, dst_off, &dst_len);
 			if (ret)
-				return ret;
+				goto out;
 		}
 
 		len = min_t(size_t, dst_len, mp_bvec_iter_len(bvec_pos->bvecs,
@@ -755,13 +758,17 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 		len_write -= len;
 		dst_len -= len;
 		dst_off += len;
+		modified = true;
 
 		/* Extend object size if needed */
 		if (dst_off > obj->o_size)
 			obj->o_size = dst_off;
 	}
+out:
+	if (modified)
+		obj->o_mtime = req->mtime;
 
-	return 0;
+	return ret;
 }
 
 static struct ceph_osds_block *lookup_right_block(struct rb_root *root,
