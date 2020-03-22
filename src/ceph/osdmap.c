@@ -1898,10 +1898,7 @@ void ceph_oloc_copy(struct ceph_object_locator *dest,
 	ceph_oloc_destroy(dest);
 
 	dest->pool = src->pool;
-	if (src->pool_ns)
-		dest->pool_ns = ceph_get_string(src->pool_ns);
-	else
-		dest->pool_ns = NULL;
+	dest->pool_ns = ceph_get_string(src->pool_ns);
 }
 EXPORT_SYMBOL(ceph_oloc_copy);
 

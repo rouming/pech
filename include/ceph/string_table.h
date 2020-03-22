@@ -24,7 +24,8 @@ extern bool ceph_strings_empty(void);
 
 static inline struct ceph_string *ceph_get_string(struct ceph_string *str)
 {
-	kref_get(&str->kref);
+	if (str)
+		kref_get(&str->kref);
 	return str;
 }
 
@@ -33,6 +34,16 @@ static inline void ceph_put_string(struct ceph_string *str)
 	if (!str)
 		return;
 	kref_put(&str->kref, ceph_release_string);
+}
+
+static inline size_t ceph_string_len(struct ceph_string *str)
+{
+	return str ? str->len : 0;
+}
+
+static inline char *ceph_string_ptr(struct ceph_string *str)
+{
+	return str ? str->str : NULL;
 }
 
 static inline int ceph_compare_string(struct ceph_string *cs,
