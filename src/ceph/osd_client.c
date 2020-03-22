@@ -1846,6 +1846,20 @@ void ceph_hoid_destroy(struct ceph_hobject_id *hoid)
 }
 EXPORT_SYMBOL(ceph_hoid_destroy);
 
+void ceph_hoid_copy(struct ceph_hobject_id *dst,
+		    const struct ceph_hobject_id *src)
+{
+	dst->key = ceph_get_string(src->key);
+	dst->nspace = ceph_get_string(src->nspace);
+	ceph_oid_copy(&dst->oid, &src->oid);
+	dst->snapid = src->snapid;
+	dst->hash_reverse_bits = src->hash_reverse_bits;
+	dst->hash = src->hash;
+	dst->is_max = src->is_max;
+	dst->pool = src->pool;
+}
+EXPORT_SYMBOL(ceph_hoid_copy);
+
 static struct ceph_osd_backoff *alloc_backoff(void)
 {
 	struct ceph_osd_backoff *backoff;
