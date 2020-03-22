@@ -3411,8 +3411,7 @@ static void handle_osds_timeout(struct work_struct *work)
 			      round_jiffies_relative(delay));
 }
 
-static int ceph_oloc_decode(void **p, void *end,
-			    struct ceph_object_locator *oloc)
+int ceph_oloc_decode(void **p, void *end, struct ceph_object_locator *oloc)
 {
 	u8 struct_v, struct_cv;
 	u32 len;
@@ -3446,23 +3445,19 @@ static int ceph_oloc_decode(void **p, void *end,
 	}
 
 	if (struct_v >= 5) {
-		bool changed = false;
-
 		len = ceph_decode_32(p);
 		if (len > 0) {
+			struct ceph_string *str;
+
 			ceph_decode_need(p, end, len, e_inval);
-			if (!oloc->pool_ns ||
-			    ceph_compare_string(oloc->pool_ns, *p, len))
-				changed = true;
+			str = ceph_find_or_create_string(*p, len);
 			*p += len;
-		} else {
-			if (oloc->pool_ns)
-				changed = true;
-		}
-		if (changed) {
-			/* redirect changes namespace */
-			pr_warn("ceph_object_locator::nspace is changed\n");
-			goto e_inval;
+			if (!str) {
+				ret = -ENOMEM;
+				goto out;
+			}
+			ceph_put_string(oloc->pool_ns);
+			oloc->pool_ns = str;
 		}
 	}
 
@@ -3483,13 +3478,16 @@ e_inval:
 	ret = -EINVAL;
 	goto out;
 }
+EXPORT_SYMBOL(ceph_oloc_decode);
 
 static int ceph_redirect_decode(void **p, void *end,
 				struct ceph_request_redirect *redir)
 {
+	struct ceph_string *pool_ns;
 	u8 struct_v, struct_cv;
 	u32 len;
 	void *struct_end;
+	bool changed;
 	int ret;
 
 	ceph_decode_need(p, end, 1 + 1 + 4, e_inval);
@@ -3504,9 +3502,19 @@ static int ceph_redirect_decode(void **p, void *end,
 	ceph_decode_need(p, end, len, e_inval);
 	struct_end = *p + len;
 
+	pool_ns = ceph_get_string(redir->oloc.pool_ns);
 	ret = ceph_oloc_decode(p, end, &redir->oloc);
+	/* If pointers are different, strings are different as well */
+	changed = (!ret && pool_ns != redir->oloc.pool_ns);
+	ceph_put_string(pool_ns);
 	if (ret)
 		goto out;
+
+	if (changed) {
+		/* redirect changes namespace */
+		pr_warn("ceph_object_locator::nspace is changed\n");
+		goto e_inval;
+	}
 
 	len = ceph_decode_32(p);
 	if (len > 0) {
@@ -3647,8 +3655,10 @@ static void handle_reply(struct ceph_osd *osd, struct ceph_msg *msg)
 		goto out_unlock_session;
 	}
 
-	m.redirect.oloc.pool_ns = req->r_t.target_oloc.pool_ns;
+	m.redirect.oloc.pool_ns =
+		ceph_get_string(req->r_t.target_oloc.pool_ns);
 	ret = decode_MOSDOpReply(msg, &m);
+	ceph_put_string(m.redirect.oloc.pool_ns);
 	m.redirect.oloc.pool_ns = NULL;
 	if (ret) {
 		pr_err("failed to decode MOSDOpReply for tid %llu: %d\n",

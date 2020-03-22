@@ -321,6 +321,9 @@ static inline void ceph_hoid_build_hash_cache(struct ceph_hobject_id *hoid)
 	hoid->hash_reverse_bits = bitrev32(hoid->hash);
 }
 
+extern int ceph_oloc_decode(void **p, void *end,
+			    struct ceph_object_locator *oloc);
+
 /*
  * PG-wide backoff: [begin, end)
  * per-object backoff: begin == end
