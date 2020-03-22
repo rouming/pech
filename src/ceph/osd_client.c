@@ -1683,8 +1683,8 @@ static int compare_names(const void *name1, size_t name1_len,
 	return ret;
 }
 
-static int hoid_compare(const struct ceph_hobject_id *lhs,
-			const struct ceph_hobject_id *rhs)
+int ceph_hoid_compare(const struct ceph_hobject_id *lhs,
+		      const struct ceph_hobject_id *rhs)
 {
 	void *effective_key1, *effective_key2;
 	size_t effective_key1_len, effective_key2_len;
@@ -1731,6 +1731,7 @@ static int hoid_compare(const struct ceph_hobject_id *lhs,
 
 	return 0;
 }
+EXPORT_SYMBOL(ceph_hoid_compare);
 
 /*
  * For decoding ->begin and ->end of MOSDBackoff only -- no MIN/MAX
@@ -1886,8 +1887,8 @@ static void free_backoff(struct ceph_osd_backoff *backoff)
 /*
  * Within a specific spgid, backoffs are managed by ->begin hoid.
  */
-DEFINE_RB_INSDEL_FUNCS2(backoff, struct ceph_osd_backoff, begin, hoid_compare,
-			RB_BYVAL, spg_node);
+DEFINE_RB_INSDEL_FUNCS2(backoff, struct ceph_osd_backoff, begin,
+			ceph_hoid_compare, RB_BYVAL, spg_node);
 
 static struct ceph_osd_backoff *lookup_containing_backoff(struct rb_root *root,
 					    const struct ceph_hobject_id *hoid)
@@ -1899,11 +1900,11 @@ static struct ceph_osd_backoff *lookup_containing_backoff(struct rb_root *root,
 		    rb_entry(n, struct ceph_osd_backoff, spg_node);
 		int cmp;
 
-		cmp = hoid_compare(hoid, cur->begin);
+		cmp = ceph_hoid_compare(hoid, cur->begin);
 		if (cmp < 0) {
 			n = n->rb_left;
 		} else if (cmp > 0) {
-			if (hoid_compare(hoid, cur->end) < 0)
+			if (ceph_hoid_compare(hoid, cur->end) < 0)
 				return cur;
 
 			n = n->rb_right;
@@ -4324,8 +4325,8 @@ static bool target_contained_by(const struct ceph_osd_request_target *t,
 	int cmp;
 
 	hoid_fill_from_target_on_stack(&hoid, t);
-	cmp = hoid_compare(&hoid, begin);
-	return !cmp || (cmp > 0 && hoid_compare(&hoid, end) < 0);
+	cmp = ceph_hoid_compare(&hoid, begin);
+	return !cmp || (cmp > 0 && ceph_hoid_compare(&hoid, end) < 0);
 }
 
 static void handle_backoff_unblock(struct ceph_osd *osd,
@@ -4346,8 +4347,8 @@ static void handle_backoff_unblock(struct ceph_osd *osd,
 		return;
 	}
 
-	if (hoid_compare(backoff->begin, m->begin) &&
-	    hoid_compare(backoff->end, m->end)) {
+	if (ceph_hoid_compare(backoff->begin, m->begin) &&
+	    ceph_hoid_compare(backoff->end, m->end)) {
 		pr_err("%s osd%d spgid %llu.%xs%d id %llu bad range?\n",
 		       __func__, osd->o_osd, m->spgid.pgid.pool,
 		       m->spgid.pgid.seed, m->spgid.shard, m->id);

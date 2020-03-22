@@ -317,6 +317,8 @@ extern void ceph_hoid_init(struct ceph_hobject_id *hoid);
 extern void ceph_hoid_destroy(struct ceph_hobject_id *hoid);
 extern void ceph_hoid_copy(struct ceph_hobject_id *dst,
 			   const struct ceph_hobject_id *src);
+extern int ceph_hoid_compare(const struct ceph_hobject_id *lhs,
+			     const struct ceph_hobject_id *rhs);
 
 static inline void ceph_hoid_build_hash_cache(struct ceph_hobject_id *hoid)
 {
