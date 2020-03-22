@@ -1658,21 +1658,22 @@ static u64 hoid_get_bitwise_key(const struct ceph_hobject_id *hoid)
 static void hoid_get_effective_key(const struct ceph_hobject_id *hoid,
 				   void **pkey, size_t *pkey_len)
 {
-	if (hoid->key_len) {
-		*pkey = hoid->key;
-		*pkey_len = hoid->key_len;
+	if (ceph_string_len(hoid->key)) {
+		*pkey = hoid->key->str;
+		*pkey_len = hoid->key->len;
 	} else {
-		*pkey = hoid->oid;
-		*pkey_len = hoid->oid_len;
+		*pkey = hoid->oid.name;
+		*pkey_len = hoid->oid.name_len;
 	}
 }
 
 static int compare_names(const void *name1, size_t name1_len,
 			 const void *name2, size_t name2_len)
 {
-	int ret;
+	int ret = 0;
 
-	ret = memcmp(name1, name2, min(name1_len, name2_len));
+	if (name1 && name2)
+		ret = memcmp(name1, name2, min(name1_len, name2_len));
 	if (!ret) {
 		if (name1_len < name2_len)
 			ret = -1;
@@ -1704,8 +1705,10 @@ static int hoid_compare(const struct ceph_hobject_id *lhs,
 	if (hoid_get_bitwise_key(lhs) > hoid_get_bitwise_key(rhs))
 		return 1;
 
-	ret = compare_names(lhs->nspace, lhs->nspace_len,
-			    rhs->nspace, rhs->nspace_len);
+	ret = compare_names(ceph_string_ptr(lhs->nspace),
+			    ceph_string_len(lhs->nspace),
+			    ceph_string_ptr(rhs->nspace),
+			    ceph_string_len(rhs->nspace));
 	if (ret)
 		return ret;
 
@@ -1716,7 +1719,8 @@ static int hoid_compare(const struct ceph_hobject_id *lhs,
 	if (ret)
 		return ret;
 
-	ret = compare_names(lhs->oid, lhs->oid_len, rhs->oid, rhs->oid_len);
+	ret = compare_names(lhs->oid.name, lhs->oid.name_len,
+			    rhs->oid.name, rhs->oid.name_len);
 	if (ret)
 		return ret;
 
@@ -1736,9 +1740,10 @@ static int hoid_compare(const struct ceph_hobject_id *lhs,
  */
 static int decode_hoid(void **p, void *end, struct ceph_hobject_id *hoid)
 {
+	struct ceph_string *str;
 	u8 struct_v;
 	u32 struct_len;
-	int ret;
+	int ret, strlen;
 
 	ret = ceph_start_decoding(p, end, 4, "hobject_t", &struct_v,
 				  &struct_len);
@@ -1750,33 +1755,42 @@ static int decode_hoid(void **p, void *end, struct ceph_hobject_id *hoid)
 		goto e_inval;
 	}
 
-	hoid->key = ceph_extract_encoded_string(p, end, &hoid->key_len,
-						GFP_NOIO);
-	if (IS_ERR(hoid->key)) {
-		ret = PTR_ERR(hoid->key);
-		hoid->key = NULL;
-		return ret;
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		str = ceph_find_or_create_string(*p, strlen);
+		*p += strlen;
+		if (!str)
+			goto e_inval;
+	} else {
+		str = NULL;
 	}
+	hoid->key = str;
 
-	hoid->oid = ceph_extract_encoded_string(p, end, &hoid->oid_len,
-						GFP_NOIO);
-	if (IS_ERR(hoid->oid)) {
-		ret = PTR_ERR(hoid->oid);
-		hoid->oid = NULL;
-		return ret;
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		ret = ceph_oid_aprintf(&hoid->oid, GFP_NOIO, "%s", *p);
+		*p += strlen;
+		if (ret)
+			goto e_inval;
 	}
 
 	ceph_decode_64_safe(p, end, hoid->snapid, e_inval);
 	ceph_decode_32_safe(p, end, hoid->hash, e_inval);
 	ceph_decode_8_safe(p, end, hoid->is_max, e_inval);
 
-	hoid->nspace = ceph_extract_encoded_string(p, end, &hoid->nspace_len,
-						   GFP_NOIO);
-	if (IS_ERR(hoid->nspace)) {
-		ret = PTR_ERR(hoid->nspace);
-		hoid->nspace = NULL;
-		return ret;
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		str = ceph_find_or_create_string(*p, strlen);
+		*p += strlen;
+		if (!str)
+			goto e_inval;
+	} else {
+		str = NULL;
 	}
+	hoid->nspace = str;
 
 	ceph_decode_64_safe(p, end, hoid->pool, e_inval);
 
@@ -1790,30 +1804,47 @@ e_inval:
 static int hoid_encoding_size(const struct ceph_hobject_id *hoid)
 {
 	return 8 + 4 + 1 + 8 + /* snapid, hash, is_max, pool */
-	       4 + hoid->key_len + 4 + hoid->oid_len + 4 + hoid->nspace_len;
+	       4 + ceph_string_len(hoid->key) + 4 + hoid->oid.name_len +
+	       4 + ceph_string_len(hoid->nspace);
 }
 
 static void encode_hoid(void **p, void *end, const struct ceph_hobject_id *hoid)
 {
 	ceph_start_encoding(p, 4, 3, hoid_encoding_size(hoid));
-	ceph_encode_string(p, end, hoid->key, hoid->key_len);
-	ceph_encode_string(p, end, hoid->oid, hoid->oid_len);
+	ceph_encode_string(p, end, ceph_string_ptr(hoid->key),
+			   ceph_string_len(hoid->key));
+	ceph_encode_string(p, end, hoid->oid.name, hoid->oid.name_len);
 	ceph_encode_64(p, hoid->snapid);
 	ceph_encode_32(p, hoid->hash);
 	ceph_encode_8(p, hoid->is_max);
-	ceph_encode_string(p, end, hoid->nspace, hoid->nspace_len);
+	ceph_encode_string(p, end, ceph_string_ptr(hoid->nspace),
+			   ceph_string_len(hoid->nspace));
 	ceph_encode_64(p, hoid->pool);
 }
 
 static void free_hoid(struct ceph_hobject_id *hoid)
 {
 	if (hoid) {
-		kfree(hoid->key);
-		kfree(hoid->oid);
-		kfree(hoid->nspace);
+		ceph_hoid_destroy(hoid);
 		kfree(hoid);
 	}
 }
+
+void ceph_hoid_init(struct ceph_hobject_id *hoid)
+{
+	memset(hoid, 0, sizeof(*hoid));
+	hoid->snapid = CEPH_NOSNAP;
+	ceph_oid_init(&hoid->oid);
+}
+EXPORT_SYMBOL(ceph_hoid_init);
+
+void ceph_hoid_destroy(struct ceph_hobject_id *hoid)
+{
+	ceph_put_string(hoid->key);
+	ceph_put_string(hoid->nspace);
+	ceph_oid_destroy(&hoid->oid);
+}
+EXPORT_SYMBOL(ceph_hoid_destroy);
 
 static struct ceph_osd_backoff *alloc_backoff(void)
 {
@@ -1899,23 +1930,14 @@ static void clear_backoffs(struct ceph_osd *osd)
 /*
  * Set up a temporary, non-owning view into @t.
  */
-static void hoid_fill_from_target(struct ceph_hobject_id *hoid,
-				  const struct ceph_osd_request_target *t)
+static void hoid_fill_from_target_on_stack(struct ceph_hobject_id *hoid,
+					const struct ceph_osd_request_target *t)
 {
-	hoid->key = NULL;
-	hoid->key_len = 0;
-	hoid->oid = t->target_oid.name;
-	hoid->oid_len = t->target_oid.name_len;
-	hoid->snapid = CEPH_NOSNAP;
+	ceph_hoid_init(hoid);
+	hoid->oid = t->target_oid;
 	hoid->hash = t->pgid.seed;
-	hoid->is_max = false;
-	if (t->target_oloc.pool_ns) {
-		hoid->nspace = t->target_oloc.pool_ns->str;
-		hoid->nspace_len = t->target_oloc.pool_ns->len;
-	} else {
-		hoid->nspace = NULL;
-		hoid->nspace_len = 0;
-	}
+	/* Do not increase a reference, just share a ptr. NULL is valid */
+	hoid->nspace = t->target_oloc.pool_ns;
 	hoid->pool = t->target_oloc.pool;
 	ceph_hoid_build_hash_cache(hoid);
 }
@@ -1931,7 +1953,7 @@ static bool should_plug_request(struct ceph_osd_request *req)
 	if (!spg)
 		return false;
 
-	hoid_fill_from_target(&hoid, &req->r_t);
+	hoid_fill_from_target_on_stack(&hoid, &req->r_t);
 	backoff = lookup_containing_backoff(&spg->backoffs, &hoid);
 	if (!backoff)
 		return false;
@@ -4153,9 +4175,11 @@ static int decode_MOSDBackoff(const struct ceph_msg *msg, struct MOSDBackoff *m)
 	ceph_decode_8_safe(&p, end, m->op, e_inval);
 	ceph_decode_64_safe(&p, end, m->id, e_inval);
 
-	m->begin = kzalloc(sizeof(*m->begin), GFP_NOIO);
+	m->begin = kmalloc(sizeof(*m->begin), GFP_NOIO);
 	if (!m->begin)
 		return -ENOMEM;
+
+	ceph_hoid_init(m->begin);
 
 	ret = decode_hoid(&p, end, m->begin);
 	if (ret) {
@@ -4163,11 +4187,12 @@ static int decode_MOSDBackoff(const struct ceph_msg *msg, struct MOSDBackoff *m)
 		return ret;
 	}
 
-	m->end = kzalloc(sizeof(*m->end), GFP_NOIO);
+	m->end = kmalloc(sizeof(*m->end), GFP_NOIO);
 	if (!m->end) {
 		free_hoid(m->begin);
 		return -ENOMEM;
 	}
+	ceph_hoid_init(m->end);
 
 	ret = decode_hoid(&p, end, m->end);
 	if (ret) {
@@ -4274,7 +4299,7 @@ static bool target_contained_by(const struct ceph_osd_request_target *t,
 	struct ceph_hobject_id hoid;
 	int cmp;
 
-	hoid_fill_from_target(&hoid, t);
+	hoid_fill_from_target_on_stack(&hoid, t);
 	cmp = hoid_compare(&hoid, begin);
 	return !cmp || (cmp > 0 && hoid_compare(&hoid, end) < 0);
 }

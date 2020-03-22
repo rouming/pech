@@ -303,20 +303,18 @@ struct ceph_spg_mapping {
 };
 
 struct ceph_hobject_id {
-	void *key;
-	size_t key_len;
-	void *oid;
-	size_t oid_len;
+	struct ceph_string    *key;
+	struct ceph_string    *nspace;
+	struct ceph_object_id oid;
 	u64 snapid;
-	u32 hash;
-	u8 is_max;
-	void *nspace;
-	size_t nspace_len;
 	s64 pool;
-
-	/* cache */
-	u32 hash_reverse_bits;
+	u32 hash;
+	u32 hash_reverse_bits;          /* cache */
+	u8  is_max;
 };
+
+extern void ceph_hoid_init(struct ceph_hobject_id *hoid);
+extern void ceph_hoid_destroy(struct ceph_hobject_id *hoid);
 
 static inline void ceph_hoid_build_hash_cache(struct ceph_hobject_id *hoid)
 {
