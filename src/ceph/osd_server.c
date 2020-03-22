@@ -20,6 +20,25 @@
 
 static const struct ceph_connection_operations osds_con_ops;
 
+/* XXX Probably need to be unified with ceph_osd_request */
+struct ceph_msg_osd_op {
+	u64                    tid;    /* unique for this peer */
+	u64                    features;
+	u32                    epoch;
+	struct ceph_spg        spgid;
+	u32                    flags;
+	int                    attempts;
+	struct timespec64      mtime;
+	unsigned int	       num_ops;
+	struct ceph_osd_req_op ops[CEPH_OSD_MAX_OPS];
+	struct ceph_object_locator
+			       oloc;
+	struct ceph_hobject_id hoid;
+	unsigned int           num_snaps;
+	u64                    snap_seq;
+	u64                    *snaps;
+};
+
 struct ceph_osds_con {
 	struct ceph_connection con;
 	struct kref ref;
@@ -103,28 +122,6 @@ static void osds_con_put(struct ceph_connection *con)
 	osds_con = container_of(con, typeof(*osds_con), con);
 	kref_put(&osds_con->ref, osds_free_con);
 }
-
-
-/* XXX Probably need to be unified with ceph_osd_request */
-struct ceph_msg_osd_op {
-	u64                    tid;    /* unique for this peer */
-	u64                    features;
-	u64                    snapid;
-	u32                    epoch;
-	struct ceph_spg        spgid;
-	struct ceph_pg         pgid;
-	u32                    flags;
-	int                    attempts;
-	struct timespec64      mtime;
-	unsigned int	       num_ops;
-	struct ceph_osd_req_op ops[CEPH_OSD_MAX_OPS];
-	struct ceph_object_locator
-			       oloc;
-	struct ceph_object_id  oid;
-	unsigned int           num_snaps;
-	u64                    snap_seq;
-	u64                    *snaps;
-};
 
 static int encode_pgid(void **p, void *end, const struct ceph_pg *pgid)
 {
@@ -240,7 +237,7 @@ create_osd_op_reply(const struct ceph_msg_osd_op *req,
 	flags |= acktype;
 
 	msg_size = 0;
-	msg_size += 4 + req->oid.name_len; /* oid */
+	msg_size += 4 + req->hoid.oid.name_len; /* oid */
 	msg_size += 1 + 8 + 4 + 4; /* pgid */
 	msg_size += 8; /* flags */
 	msg_size += 4; /* result */
@@ -266,10 +263,10 @@ create_osd_op_reply(const struct ceph_msg_osd_op *req,
 	msg->hdr.version = cpu_to_le16(7);
 	msg->hdr.tid = cpu_to_le64(req->tid);
 
-	ceph_encode_string_safe(&p, end, req->oid.name,
-				req->oid.name_len, bad);
+	ceph_encode_string_safe(&p, end, req->hoid.oid.name,
+				req->hoid.oid.name_len, bad);
 
-	ret = encode_pgid(&p, end, &req->pgid);
+	ret = encode_pgid(&p, end, &req->spgid.pgid);
 	if (ret)
 		goto bad;
 
@@ -321,7 +318,7 @@ bad:
 static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 {
 	ceph_oloc_init(&req->oloc);
-	ceph_oid_init(&req->oid);
+	ceph_hoid_init(&req->hoid);
 	memset(&req->ops, 0, sizeof(req->ops));
 	req->snaps = NULL;
 }
@@ -329,7 +326,7 @@ static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 static void free_msg_osd_op(struct ceph_msg_osd_op *req)
 {
 	ceph_oloc_destroy(&req->oloc);
-	ceph_oid_destroy(&req->oid);
+	ceph_hoid_destroy(&req->hoid);
 	kfree(req->snaps);
 }
 
@@ -357,53 +354,6 @@ static int decode_spgid(void **p, void *end, struct ceph_spg *spgid)
 	}
 
 	return ret;
-bad:
-	return -EINVAL;
-}
-
-static struct ceph_string *decode_string(void **p, void *end)
-{
-	struct ceph_string *str;
-	size_t strlen;
-
-	ceph_decode_32_safe(p, end, strlen, bad);
-	ceph_decode_need(p, end, strlen, bad);
-	str = ceph_find_or_create_string(*p, strlen);
-	*p += strlen;
-	if (!str)
-		return ERR_PTR(-ENOMEM);
-
-	return str;
-bad:
-	return ERR_PTR(-EINVAL);
-}
-
-static int decode_oloc(void **p, void *end, struct ceph_object_locator *oloc)
-{
-	void *beg;
-	u32 struct_len;
-	u8 struct_v;
-	int ret;
-
-	ret = ceph_start_decoding(p, end, 4, "oloc", &struct_v, &struct_len);
-	beg = *p;
-	if (ret)
-		return ret;
-	ceph_decode_64_safe(p, end, oloc->pool, bad);
-	ceph_decode_skip_n(p, end, 4, bad); /* preferred */
-	ceph_decode_skip_n(p, end, 4, bad); /* key len */
-	oloc->pool_ns = decode_string(p, end);
-	if (IS_ERR(oloc->pool_ns))
-		return PTR_ERR(oloc->pool_ns);
-
-	if (beg + struct_len < *p) {
-		pr_warn("%s: corrupted structure, len=%d\n",
-			__func__, struct_len);
-		goto bad;
-	}
-	*p = beg + struct_len;
-
-	return 0;
 bad:
 	return -EINVAL;
 }
@@ -509,7 +459,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 	ret = decode_spgid(&p, end, &req->spgid); /* actual spg */
 	if (ret)
 		goto err;
-	ceph_decode_32_safe(&p, end, req->pgid.seed, bad); /* raw hash */
+	ceph_decode_32_safe(&p, end, req->hoid.hash, bad); /* raw hash */
 	ceph_decode_32_safe(&p, end, req->epoch, bad);
 	ceph_decode_32_safe(&p, end, req->flags, bad);
 
@@ -533,13 +483,13 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 	ceph_decode_copy_safe(&p, end, &mtime, sizeof(mtime), bad);
 	ceph_decode_timespec64(&req->mtime, &mtime);
 
-	ret = decode_oloc(&p, end, &req->oloc);
+	ret = ceph_oloc_decode(&p, end, &req->oloc);
 	if (ret)
 		goto err;
 
 	ceph_decode_32_safe(&p, end, strlen, bad);
 	ceph_decode_need(&p, end, strlen, bad);
-	ret = ceph_oid_aprintf(&req->oid, GFP_KERNEL, "%s", p);
+	ret = ceph_oid_aprintf(&req->hoid.oid, GFP_KERNEL, "%s", p);
 	p += strlen;
 	if (ret)
 		goto err;
@@ -556,7 +506,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 			goto err;
 	}
 
-	ceph_decode_64_safe(&p, end, req->snapid, bad); /* snapid */
+	ceph_decode_64_safe(&p, end, req->hoid.snapid, bad); /* snapid */
 	ceph_decode_64_safe(&p, end, req->snap_seq, bad);
 	ceph_decode_32_safe(&p, end, req->num_snaps, bad);
 	if (req->num_snaps > 1024) {
@@ -580,6 +530,12 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	ceph_decode_32_safe(&p, end, req->attempts, bad);
 	ceph_decode_64_safe(&p, end, req->features, bad);
+
+	ceph_hoid_build_hash_cache(&req->hoid);
+	req->hoid.pool = req->spgid.pgid.pool;
+	/* XXX Should be something valid? */
+	req->hoid.key = NULL;
+	req->hoid.nspace = ceph_get_string(req->oloc.pool_ns);
 
 	return 0;
 err:
