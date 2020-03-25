@@ -52,41 +52,6 @@ struct ceph_osd {
 #define CEPH_OSD_SLAB_OPS	2
 #define CEPH_OSD_MAX_OPS	16
 
-enum ceph_osd_data_type {
-	CEPH_OSD_DATA_TYPE_NONE = 0,
-	CEPH_OSD_DATA_TYPE_PAGES,
-	CEPH_OSD_DATA_TYPE_PAGELIST,
-#ifdef CONFIG_BLOCK
-	CEPH_OSD_DATA_TYPE_BIO,
-#endif /* CONFIG_BLOCK */
-	CEPH_OSD_DATA_TYPE_BVECS,
-};
-
-struct ceph_osd_data {
-	enum ceph_osd_data_type	type;
-	union {
-		struct {
-			struct page	**pages;
-			u64		length;
-			u32		alignment;
-			bool		pages_from_pool;
-			bool		own_pages;
-		};
-		struct ceph_pagelist	*pagelist;
-#ifdef CONFIG_BLOCK
-		struct {
-			struct ceph_bio_iter	bio_pos;
-			u32			bio_length;
-		};
-#endif /* CONFIG_BLOCK */
-		struct {
-			struct ceph_bvec_iter	bvec_pos;
-			u32			num_bvecs;
-			bool			own_bvecs;
-		};
-	};
-};
-
 struct ceph_osd_req_op {
 	u16 op;           /* CEPH_OSD_OP_* */
 	u32 flags;        /* CEPH_OSD_OP_FLAG_* */
@@ -477,12 +442,6 @@ extern void osd_req_op_alloc_hint_init(struct ceph_osd_request *osd_req,
 				       unsigned int which,
 				       u64 expected_object_size,
 				       u64 expected_write_size);
-
-extern void ceph_osdc_msg_data_add(struct ceph_msg *msg,
-				   struct ceph_osd_data *osd_data);
-extern void ceph_osd_data_bvecs_init(struct ceph_osd_data *osd_data,
-				     struct ceph_bvec_iter *bvec_pos,
-				     u32 num_bvecs, bool own_bvecs);
 
 extern struct ceph_osd_request *ceph_osdc_alloc_request(struct ceph_osd_client *osdc,
 					       struct ceph_snap_context *snapc,

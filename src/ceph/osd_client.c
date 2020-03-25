@@ -124,61 +124,6 @@ static int calc_layout(struct ceph_file_layout *layout, u64 off, u64 *plen,
 	return 0;
 }
 
-static void ceph_osd_data_init(struct ceph_osd_data *osd_data)
-{
-	memset(osd_data, 0, sizeof (*osd_data));
-	osd_data->type = CEPH_OSD_DATA_TYPE_NONE;
-}
-
-/*
- * Consumes @pages if @own_pages is true.
- */
-__attribute__((unused))
-static void ceph_osd_data_pages_init(struct ceph_osd_data *osd_data,
-			struct page **pages, u64 length, u32 alignment,
-			bool pages_from_pool, bool own_pages)
-{
-	osd_data->type = CEPH_OSD_DATA_TYPE_PAGES;
-	osd_data->pages = pages;
-	osd_data->length = length;
-	osd_data->alignment = alignment;
-	osd_data->pages_from_pool = pages_from_pool;
-	osd_data->own_pages = own_pages;
-}
-
-/*
- * Consumes a ref on @pagelist.
- */
-__attribute__((unused))
-static void ceph_osd_data_pagelist_init(struct ceph_osd_data *osd_data,
-			struct ceph_pagelist *pagelist)
-{
-	osd_data->type = CEPH_OSD_DATA_TYPE_PAGELIST;
-	osd_data->pagelist = pagelist;
-}
-
-#ifdef CONFIG_BLOCK
-static void ceph_osd_data_bio_init(struct ceph_osd_data *osd_data,
-				   struct ceph_bio_iter *bio_pos,
-				   u32 bio_length)
-{
-	osd_data->type = CEPH_OSD_DATA_TYPE_BIO;
-	osd_data->bio_pos = *bio_pos;
-	osd_data->bio_length = bio_length;
-}
-#endif /* CONFIG_BLOCK */
-
-void ceph_osd_data_bvecs_init(struct ceph_osd_data *osd_data,
-			      struct ceph_bvec_iter *bvec_pos,
-			      u32 num_bvecs, bool own_bvecs)
-{
-	osd_data->type = CEPH_OSD_DATA_TYPE_BVECS;
-	osd_data->bvec_pos = *bvec_pos;
-	osd_data->num_bvecs = num_bvecs;
-	osd_data->own_bvecs = own_bvecs;
-}
-EXPORT_SYMBOL(osd_osd_data_bvecs_init);
-
 static struct ceph_msg_data *
 osd_req_op_raw_data_in(struct ceph_osd_request *osd_req, unsigned int which)
 {
@@ -338,42 +283,6 @@ void osd_req_op_cls_response_data_pages(struct ceph_osd_request *osd_req,
 				pages_from_pool, own_pages);
 }
 EXPORT_SYMBOL(osd_req_op_cls_response_data_pages);
-
-static u64 ceph_osd_data_length(struct ceph_osd_data *osd_data)
-{
-	switch (osd_data->type) {
-	case CEPH_OSD_DATA_TYPE_NONE:
-		return 0;
-	case CEPH_OSD_DATA_TYPE_PAGES:
-		return osd_data->length;
-	case CEPH_OSD_DATA_TYPE_PAGELIST:
-		return (u64)osd_data->pagelist->length;
-#ifdef CONFIG_BLOCK
-	case CEPH_OSD_DATA_TYPE_BIO:
-		return (u64)osd_data->bio_length;
-#endif /* CONFIG_BLOCK */
-	case CEPH_OSD_DATA_TYPE_BVECS:
-		return osd_data->bvec_pos.iter.bi_size;
-	default:
-		WARN(true, "unrecognized data type %d\n", (int)osd_data->type);
-		return 0;
-	}
-}
-
-__attribute__((unused))
-static void ceph_osd_data_release(struct ceph_osd_data *osd_data)
-{
-	if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGES && osd_data->own_pages) {
-		int num_pages;
-
-		num_pages = calc_pages_for((u64)osd_data->alignment,
-						(u64)osd_data->length);
-		ceph_release_page_vector(osd_data->pages, num_pages);
-	} else if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGELIST) {
-		ceph_pagelist_release(osd_data->pagelist);
-	}
-	ceph_osd_data_init(osd_data);
-}
 
 static void osd_req_op_data_release(struct ceph_osd_request *osd_req,
 			unsigned int which)
@@ -961,34 +870,6 @@ void osd_req_op_alloc_hint_init(struct ceph_osd_request *osd_req,
 	op->flags |= CEPH_OSD_OP_FLAG_FAILOK;
 }
 EXPORT_SYMBOL(osd_req_op_alloc_hint_init);
-
-void ceph_osdc_msg_data_add(struct ceph_msg *msg,
-			    struct ceph_osd_data *osd_data)
-{
-	u64 length = ceph_osd_data_length(osd_data);
-
-	if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGES) {
-		BUG_ON(length > (u64) SIZE_MAX);
-		if (length)
-			ceph_msg_data_add_pages(msg, osd_data->pages,
-					length, osd_data->alignment,
-					osd_data->pages_from_pool, false);
-	} else if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGELIST) {
-		BUG_ON(!length);
-		ceph_msg_data_add_pagelist(msg, osd_data->pagelist);
-#ifdef CONFIG_BLOCK
-	} else if (osd_data->type == CEPH_OSD_DATA_TYPE_BIO) {
-		ceph_msg_data_add_bio(msg, &osd_data->bio_pos, length);
-#endif
-	} else if (osd_data->type == CEPH_OSD_DATA_TYPE_BVECS) {
-		ceph_msg_data_add_bvecs(msg, &osd_data->bvec_pos,
-					osd_data->num_bvecs,
-					osd_data->own_bvecs);
-	} else {
-		BUG_ON(osd_data->type != CEPH_OSD_DATA_TYPE_NONE);
-	}
-}
-EXPORT_SYMBOL(ceph_osdc_msg_data_add);
 
 static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			     const struct ceph_osd_req_op *src)
