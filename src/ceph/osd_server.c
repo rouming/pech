@@ -104,7 +104,7 @@ static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 }
 
 /**
- * Define RB functions for object lookup and insert by spgid,oid pair
+ * Define RB functions for object lookup and insert by hoid
  */
 DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
 		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
@@ -709,7 +709,7 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	bvec_pos = &data->bvec_pos;
 
 	/*
-	 * Find or create an object by pg,oid pair
+	 * Find or create an object by hoid
 	 */
 	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
 	if (!obj) {
@@ -815,14 +815,14 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	struct ceph_bvec_iter it;
 
 	/*
-	 * Find an object by pg,oid pair
+	 * Find an object by hoid
 	 */
 	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
 	if (!obj)
 		return -ENOENT;
 
 	if (op->extent.offset >= obj->o_size)
-		/* Offset if beyond the object, nothing to do */
+		/* Offset is beyond the object, nothing to do */
 		return 0;
 
 	len_read = min(op->extent.length, obj->o_size - op->extent.offset);
@@ -905,7 +905,7 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 	int ret;
 
 	/*
-	 * Find an object by pg,oid pair
+	 * Find an object by hoid
 	 */
 	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
 	if (!obj)
