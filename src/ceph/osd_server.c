@@ -670,11 +670,10 @@ static inline int next_dst(struct ceph_osd_req_op *op,
 
 static int handle_osd_op_write(struct ceph_msg *msg,
 			       struct ceph_msg_osd_op *req,
-			       struct ceph_osd_req_op *op)
+			       struct ceph_osd_req_op *op,
+			       struct ceph_msg_data_cursor *in_cur)
 {
 	struct ceph_osd_server *osds = con_to_osds(msg->con);
-	struct ceph_msg_data *data = &msg->data[0];
-	struct ceph_bvec_iter *bvec_pos;
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
 
@@ -692,12 +691,6 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	    op->extent.length >= 4096)
 		/* Write is noop */
 		return 0;
-
-	/* See osds_alloc_msg() */
-	BUG_ON(msg->num_data_items != 1);
-	BUG_ON(data->type != CEPH_MSG_DATA_BVECS);
-
-	bvec_pos = &data->bvec_pos;
 
 	/*
 	 * Find or create an object by hoid
@@ -726,8 +719,8 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	ret = 0;
 
 	while (len_write) {
-		void *src, *dst;
-		size_t len;
+		size_t len, len2;
+		void *dst;
 
 		if (!dst_len) {
 			ret = next_dst(op, obj, &blk, dst_off, &dst_len);
@@ -735,20 +728,18 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 				goto out;
 		}
 
-		len = min_t(size_t, dst_len, mp_bvec_iter_len(bvec_pos->bvecs,
-							      bvec_pos->iter));
+		ceph_msg_data_cursor_next(in_cur);
+
+		len = iov_iter_count(&in_cur->iter);
+		len = min(len, dst_len);
 		len = min(len, len_write);
 
-		src = page_address(mp_bvec_iter_page(bvec_pos->bvecs,
-						     bvec_pos->iter));
 		dst = page_address(blk->b_page);
+		len2 = copy_from_iter(dst + (dst_off & ~OSDS_BLOCK_MASK),
+				      len, &in_cur->iter);
+		WARN_ON(len2 != len);
 
-		memcpy(dst + (dst_off & ~OSDS_BLOCK_MASK),
-		       src + mp_bvec_iter_offset(bvec_pos->bvecs,
-						 bvec_pos->iter),
-		       len);
-
-		ceph_bvec_iter_advance(bvec_pos, len);
+		ceph_msg_data_cursor_advance(in_cur, len);
 		len_write -= len;
 		dst_len -= len;
 		dst_off += len;
@@ -925,12 +916,43 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 	return 0;
 }
 
-static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
+static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
+			 struct ceph_osd_req_op *op,
+			 struct ceph_msg_data_cursor *in_cur)
+{
+	int ret;
+
+	switch (op->op) {
+	case CEPH_OSD_OP_WRITE:
+		ret = handle_osd_op_write(msg, req, op, in_cur);
+		break;
+	case CEPH_OSD_OP_READ:
+		ret = handle_osd_op_read(msg, req, op);
+		break;
+	case CEPH_OSD_OP_STAT:
+		ret = handle_osd_op_stat(msg, req, op);
+		break;
+	default:
+		pr_err("%s: unknown op type 0x%x\n",
+		       __func__, op->op);
+		ret = -EOPNOTSUPP;
+		break;
+	}
+	op->rval = ret;
+
+	return ret;
+}
+
+static void handle_osd_ops(struct ceph_connection *con, struct ceph_msg *msg)
 {
 	struct ceph_osd_client *osdc = con_to_osdc(con);
+	struct ceph_msg_data_cursor in_cur;
 	struct ceph_msg_osd_op req;
 	struct ceph_msg *reply;
 	int ret, i;
+
+	/* See osds_alloc_msg(), we gather input in a single data */
+	BUG_ON(msg->num_data_items > 1);
 
 	ret = ceph_decode_msg_osd_op(msg, &req);
 	if (unlikely(ret)) {
@@ -939,28 +961,16 @@ static void handle_osd_op(struct ceph_connection *con, struct ceph_msg *msg)
 		return;
 	}
 
+	/* Init iterator for input data, ->data_length can be 0 */
+	ceph_msg_data_cursor_init(&in_cur, msg->data, WRITE,
+				  msg->data_length);
+
 	/* Iterate over all operations */
 	for (i = 0; i < req.num_ops; i++) {
 		struct ceph_osd_req_op *op = &req.ops[i];
 
-		switch (op->op) {
-		case CEPH_OSD_OP_WRITE:
-			ret = handle_osd_op_write(msg, &req, op);
-			break;
-		case CEPH_OSD_OP_READ:
-			ret = handle_osd_op_read(msg, &req, op);
-			break;
-		case CEPH_OSD_OP_STAT:
-			ret = handle_osd_op_stat(msg, &req, op);
-			break;
-		default:
-			pr_err("%s: unknown op[%d] type 0x%x\n",
-			       __func__, i, op->op);
-			ret = -EOPNOTSUPP;
-			break;
-		}
-		op->rval = ret;
-
+		/* Make things happen */
+		ret = handle_osd_op(msg, &req, op, &in_cur);
 		if (ret && (op->flags & CEPH_OSD_OP_FLAG_FAILOK) &&
 		    ret != -EAGAIN && ret != -EINPROGRESS)
 			/* Ignore op error and continue executing */
@@ -992,7 +1002,7 @@ static void osds_dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 
 	switch (type) {
 	case CEPH_MSG_OSD_OP:
-		handle_osd_op(con, msg);
+		handle_osd_ops(con, msg);
 		break;
 	default:
 		pr_err("@@ message type %d, \"%s\"\n", type,
