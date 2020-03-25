@@ -968,7 +968,8 @@ void ceph_osdc_msg_data_add(struct ceph_msg *msg,
 		BUG_ON(length > (u64) SIZE_MAX);
 		if (length)
 			ceph_msg_data_add_pages(msg, osd_data->pages,
-					length, osd_data->alignment, false);
+					length, osd_data->alignment,
+					osd_data->pages_from_pool, false);
 	} else if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGELIST) {
 		BUG_ON(!length);
 		ceph_msg_data_add_pagelist(msg, osd_data->pagelist);
@@ -5590,7 +5591,7 @@ static struct ceph_msg *alloc_msg_with_page_vector(struct ceph_msg_header *hdr)
 			return NULL;
 		}
 
-		ceph_msg_data_add_pages(m, pages, data_len, 0, true);
+		ceph_msg_data_add_pages(m, pages, data_len, 0, false, true);
 	}
 
 	return m;

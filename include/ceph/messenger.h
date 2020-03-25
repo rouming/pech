@@ -203,6 +203,7 @@ struct ceph_msg_data {
 			struct page	**pages;
 			size_t		length;		/* total # bytes */
 			unsigned int	alignment;	/* first page */
+			bool		pages_from_pool;
 			bool		own_pages;
 		};
 		struct ceph_pagelist	*pagelist;
@@ -405,8 +406,28 @@ extern void ceph_con_keepalive(struct ceph_connection *con);
 extern bool ceph_con_keepalive_expired(struct ceph_connection *con,
 				       unsigned long interval);
 
+void ceph_msg_data_init(struct ceph_msg_data *data);
+void ceph_msg_data_release(struct ceph_msg_data *data);
+size_t ceph_msg_data_length(struct ceph_msg_data *data);
+
+void ceph_msg_data_pages_init(struct ceph_msg_data *data,
+			      struct page **pages, u64 length, u32 alignment,
+			      bool pages_from_pool, bool own_pages);
+void ceph_msg_data_pagelist_init(struct ceph_msg_data *data,
+				 struct ceph_pagelist *pagelist);
+#ifdef CONFIG_BLOCK
+void ceph_msg_data_bio_init(struct ceph_msg_data *data,
+			    struct ceph_bio_iter *bio_pos,
+			    u32 bio_length);
+#endif /* CONFIG_BLOCK */
+void ceph_msg_data_bvecs_init(struct ceph_msg_data *data,
+			      struct ceph_bvec_iter *bvec_pos,
+			      u32 num_bvecs, bool own_bvecs);
+void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *data);
+
 void ceph_msg_data_add_pages(struct ceph_msg *msg, struct page **pages,
-			     size_t length, size_t alignment, bool own_pages);
+			     size_t length, size_t alignment,
+			     bool pages_from_pool, bool own_pages);
 extern void ceph_msg_data_add_pagelist(struct ceph_msg *msg,
 				struct ceph_pagelist *pagelist);
 #ifdef CONFIG_BLOCK
