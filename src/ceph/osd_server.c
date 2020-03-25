@@ -180,17 +180,12 @@ bad:
  * XXX not ->indata_len
  */
 static u32 osd_req_encode_op(struct ceph_osd_op *dst,
-			     struct ceph_osd_req_op *src,
-			     struct ceph_msg_data **pdata)
+			     struct ceph_osd_req_op *src)
 {
-	struct ceph_msg_data *data = NULL;
-
 	switch (src->op) {
 	case CEPH_OSD_OP_STAT:
-		data = &src->raw_data;
 		break;
 	case CEPH_OSD_OP_READ:
-		data = &src->extent.osd_data;
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -249,15 +244,12 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			ceph_osd_op_name(src->op));
 		WARN_ON(1);
 
-		*pdata = data;
-
 		return 0;
 	}
 
 	dst->op = cpu_to_le16(src->op);
 	dst->flags = cpu_to_le32(src->flags);
 	dst->payload_len = cpu_to_le32(src->outdata_len);
-	*pdata = data;
 
 	return src->outdata_len;
 }
@@ -343,15 +335,14 @@ create_osd_op_reply(struct ceph_msg_osd_op *req,
 
 	data_len = 0;
 	for (i = 0; i < req->num_ops; i++) {
-		struct ceph_osd_req_op *src_op = &req->ops[i];
-		struct ceph_msg_data *osd_data;
-		struct ceph_osd_op *dst_op = p;
+		struct ceph_osd_req_op *op = &req->ops[i];
+		struct ceph_osd_op *raw_op = p;
 
-		data_len += osd_req_encode_op(dst_op, src_op, &osd_data);
+		data_len += osd_req_encode_op(raw_op, op);
 		p += sizeof(struct ceph_osd_op);
 
-		if (osd_data)
-			ceph_msg_data_add(msg, osd_data);
+		if (op->outdata)
+			ceph_msg_data_add(msg, op->outdata);
 	}
 	msg->hdr.data_len = cpu_to_le32(data_len);
 
@@ -832,11 +823,12 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	if (ret)
 		return ret;
 
+	/* Setup output length and data */
+	op->outdata_len = len_read;
+	op->outdata = &op->extent.osd_data;
+
 	/* Give ownership to msg */
 	ceph_msg_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
-
-	/* Setup output length */
-	op->outdata_len = len_read;
 
 	off_inpg = 0;
 	off = op->extent.offset;
@@ -920,6 +912,7 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 
 	/* Setup output length */
 	op->outdata_len = outdata_len;
+	op->outdata = &op->raw_data;
 
 	/* Give ownership to msg */
 	ceph_msg_data_bvecs_init(&op->raw_data, &it, 1, true);

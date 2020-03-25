@@ -59,6 +59,9 @@ struct ceph_osd_req_op {
 	u32 outdata_len;  /* reply */
 	s32 rval;
 
+	/* Set when operation is completed */
+	struct ceph_msg_data *outdata;
+
 	union {
 		struct ceph_msg_data raw_data;
 		struct {
