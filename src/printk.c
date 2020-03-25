@@ -81,21 +81,30 @@ void printk_set_current_level(int level)
 	current_log_level = level & 0x7;
 }
 
-int printk(const char *fmt, ...)
+int vprintk(int level, const char *fmt, va_list args)
 {
-	va_list args;
-	int level;
 	int ret;
 
-	level = printk_get_level(fmt);
+	level &= 0x7;
+
 	if (current_log_level < level)
 		return 0;
 
 	ret = printf(prefix[level]);
-
 	fmt = printk_skip_level(fmt);
-	va_start(args, fmt);
 	ret += vprintf(fmt, args);
+
+	return ret;
+}
+
+int printk(const char *fmt, ...)
+{
+	int ret, level;
+	va_list args;
+
+	level = printk_get_level(fmt);
+	va_start(args, fmt);
+	ret = vprintk(level, fmt, args);
 	va_end(args);
 
 	return ret;

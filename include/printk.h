@@ -25,6 +25,7 @@
 #define LOGLEVEL_INFO		6	/* informational */
 #define LOGLEVEL_DEBUG		7	/* debug-level messages */
 
+extern int vprintk(int level, const char *fmt, va_list args);
 extern __printf(1, 2) int printk(const char *s, ...);
 extern void printk_set_current_level(int level);
 
