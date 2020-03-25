@@ -590,6 +590,8 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 		seq_puts(m, "notcp_nodelay,");
 	if (show_all && (opt->flags & CEPH_OPT_ABORT_ON_FULL))
 		seq_puts(m, "abort_on_full,");
+	if (show_all && (opt->flags & CEPH_OPT_NOOP_WRITE))
+		seq_puts(m, "noop_write,");
 
 	if (opt->mount_timeout != CEPH_MOUNT_TIMEOUT_DEFAULT)
 		seq_printf(m, "mount_timeout=%d,",
