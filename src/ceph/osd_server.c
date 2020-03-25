@@ -190,6 +190,7 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 		data = &src->raw_data_in;
 		break;
 	case CEPH_OSD_OP_READ:
+		data = &src->extent.osd_data;
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -200,7 +201,6 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			cpu_to_le64(src->extent.truncate_size);
 		dst->extent.truncate_seq =
 			cpu_to_le32(src->extent.truncate_seq);
-		data = &src->extent.osd_data;
 		break;
 	case CEPH_OSD_OP_CALL:
 		dst->cls.class_len = src->cls.class_len;
