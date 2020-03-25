@@ -261,6 +261,7 @@ enum {
 	Opt_secret,
 	Opt_key,
 	Opt_ip,
+	Opt_class_dir,
 	/* string args above */
 	Opt_share,
 	Opt_crc,
@@ -292,6 +293,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_flag_no ("share",			Opt_share),
 	fsparam_flag_no ("tcp_nodelay",			Opt_tcp_nodelay),
 	fsparam_flag	("noop_write",			Opt_noop_write),
+	fsparam_string	("class_dir",			Opt_class_dir),
 	{}
 };
 
@@ -326,6 +328,7 @@ void ceph_destroy_options(struct ceph_options *opt)
 		return;
 
 	kfree(opt->name);
+	kfree(opt->class_dir);
 	if (opt->key) {
 		ceph_crypto_key_destroy(opt->key);
 		kfree(opt->key);
@@ -535,6 +538,12 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 		opt->flags |= CEPH_OPT_NOOP_WRITE;
 		break;
 
+	case Opt_class_dir:
+		kfree(opt->class_dir);
+		opt->class_dir = param->string;
+		param->string = NULL;
+		break;
+
 	default:
 		BUG();
 	}
@@ -555,6 +564,11 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 	if (opt->name) {
 		seq_puts(m, "name=");
 		seq_escape(m, opt->name, ", \t\n\\");
+		seq_putc(m, ',');
+	}
+	if (opt->class_dir) {
+		seq_puts(m, "class_dir=");
+		seq_escape(m, opt->class_dir, ", \t\n\\");
 		seq_putc(m, ',');
 	}
 	if (opt->key)
