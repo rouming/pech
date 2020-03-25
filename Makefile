@@ -38,7 +38,7 @@ pech-osd: $(OBJ)
 ifneq ($(VERBOSE),1)
 	@echo LD $@
 endif
-	$(Q)$(CC) -o $@ $^ -lresolv
+	$(Q)$(CC) -o $@ $^ -lresolv -ldl -rdynamic
 
 .PHONY: clean
 

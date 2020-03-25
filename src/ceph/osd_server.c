@@ -17,6 +17,7 @@
 #include "ceph/decode.h"
 #include "ceph/auth.h"
 #include "ceph/osdmap.h"
+#include "ceph/objclass/class_loader.h"
 
 enum {
 	OSDS_BLOCK_SHIFT    = 16, /* 64k, must be ^2 */
@@ -53,6 +54,7 @@ struct ceph_osds_con {
 struct ceph_osd_server {
 	struct ceph_client     *client;
 	int                    osd;
+	struct ceph_cls_loader class_loader;
 	struct rb_root         s_objects;  /* all objects */
 };
 
@@ -69,6 +71,10 @@ struct ceph_osds_block {
 	struct page            *b_page;
 	off_t                  b_off;     /* offset inside a whole object */
 };
+
+static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
+			 struct ceph_osd_req_op *op,
+			 struct ceph_msg_data_cursor *in_cur);
 
 static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 {
@@ -917,6 +923,334 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 	return 0;
 }
 
+struct osds_cls_call_ctx {
+	struct ceph_cls_call_ctx ctx;
+	struct ceph_msg          *msg;
+	struct ceph_msg_osd_op   *req;
+};
+
+/**
+ * osds_cls_request_desc() - back call for OSD class, which fills in the
+ *                           request description.
+ */
+static int osds_cls_request_desc(struct ceph_cls_call_ctx *ctx,
+				 struct ceph_cls_req_desc *desc)
+{
+	struct osds_cls_call_ctx *osds_ctx;
+	struct ceph_connection *con;
+	struct ceph_msg *msg;
+
+	osds_ctx = container_of(ctx, typeof(*osds_ctx), ctx);
+
+	msg = osds_ctx->msg;
+	con = msg->con;
+
+	desc->source.name = msg->hdr.src;
+	desc->source.addr = con->peer_addr;
+	desc->peer_features = con->peer_features;
+
+	return 0;
+}
+
+/**
+ * From OSD classes we get ceph_osd_op structure, since the archutecture
+ * is the same we just copy all members directly.
+ */
+static int osd_op_to_req_op(const struct ceph_osd_op *src,
+			    struct ceph_osd_req_op *dst)
+{
+	dst->op = src->op;
+	dst->flags = src->flags;
+	dst->indata_len = src->payload_len;
+	dst->outdata = NULL;
+	dst->outdata_len = 0;
+
+	switch (dst->op) {
+	case CEPH_OSD_OP_STAT:
+		dst->raw_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_WRITE:
+	case CEPH_OSD_OP_WRITEFULL:
+	case CEPH_OSD_OP_ZERO:
+	case CEPH_OSD_OP_TRUNCATE:
+		dst->extent.offset = src->extent.offset;
+		dst->extent.length = src->extent.length;
+		dst->extent.truncate_size = src->extent.truncate_size;
+		dst->extent.truncate_seq = src->extent.truncate_seq;
+		dst->extent.osd_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_CALL:
+		dst->cls.class_len = src->cls.class_len;
+		dst->cls.method_len = src->cls.method_len;
+		dst->cls.indata_len = src->cls.indata_len;
+		dst->cls.request_info.type = CEPH_MSG_DATA_NONE;
+		dst->cls.request_data.type = CEPH_MSG_DATA_NONE;
+		dst->cls.response_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_WATCH:
+		dst->watch.cookie = src->watch.cookie;
+		dst->watch.op = src->watch.op;
+		dst->watch.gen = src->watch.gen;
+		break;
+	case CEPH_OSD_OP_NOTIFY_ACK:
+		dst->notify_ack.request_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_NOTIFY:
+		dst->notify.cookie = src->notify.cookie;
+		dst->notify.request_data.type = CEPH_MSG_DATA_NONE;
+		dst->notify.response_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_LIST_WATCHERS:
+		dst->notify.response_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_SETALLOCHINT:
+		dst->alloc_hint.expected_object_size =
+			src->alloc_hint.expected_object_size;
+		dst->alloc_hint.expected_write_size =
+			src->alloc_hint.expected_write_size;
+		break;
+	case CEPH_OSD_OP_SETXATTR:
+	case CEPH_OSD_OP_CMPXATTR:
+		dst->xattr.name_len = src->xattr.name_len;
+		dst->xattr.value_len = src->xattr.value_len;
+		dst->xattr.cmp_op = src->xattr.cmp_op;
+		dst->xattr.cmp_mode = src->xattr.cmp_mode;
+		dst->xattr.osd_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_CREATE:
+	case CEPH_OSD_OP_DELETE:
+		break;
+	case CEPH_OSD_OP_COPY_FROM2:
+		dst->copy_from.snapid = src->copy_from.snapid;
+		dst->copy_from.src_version =
+			src->copy_from.src_version;
+		dst->copy_from.flags = src->copy_from.flags;
+		dst->copy_from.src_fadvise_flags =
+			src->copy_from.src_fadvise_flags;
+		dst->copy_from.osd_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	default:
+		pr_err("unsupported osd opcode %s\n",
+			ceph_osd_op_name(dst->op));
+		WARN_ON(1);
+
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+struct ceph_msg_data_kvec {
+	struct ceph_msg_data data;
+	struct ceph_kvec     vec;
+	struct kvec          kvec[];
+};
+
+static void ceph_msg_data_kvec_release(struct ceph_kvec *kvec)
+{
+	struct ceph_msg_data_kvec *vec_data;
+
+	vec_data = container_of(kvec, typeof(*vec_data), vec);
+	ceph_msg_data_release(&vec_data->data);
+	kfree(vec_data);
+}
+
+/**
+ * Convert ceph_msg_data to kvec, because ceph_pech_proxy expects
+ * ceph_kvec to be filled in.
+ */
+static struct ceph_msg_data_kvec *
+alloc_msg_data_kvec(struct ceph_msg_data *data)
+{
+	struct ceph_msg_data_kvec *vec_data;
+	unsigned int nr_segs, size, i;
+
+	if (data->type == CEPH_MSG_DATA_BVECS)
+		nr_segs = data->num_bvecs;
+	else if (data->type == CEPH_MSG_DATA_PAGELIST)
+		nr_segs = PAGE_ALIGN(data->pagelist->length) >> PAGE_SHIFT;
+	else
+		BUG();
+
+	size  = sizeof(*vec_data);
+	size += sizeof(*vec_data->kvec) * nr_segs;
+	vec_data = kmalloc(size, GFP_KERNEL);
+	if (!vec_data)
+		return NULL;
+
+	/* Take ownership */
+	vec_data->data = *data;
+	vec_data->vec.kvec    = vec_data->kvec;
+	vec_data->vec.release = ceph_msg_data_kvec_release;
+	vec_data->vec.length  = ceph_msg_data_length(data);
+	vec_data->vec.nr_segs = nr_segs;
+
+	if (data->type == CEPH_MSG_DATA_BVECS) {
+		for (i = 0; i < nr_segs; i++) {
+			struct bio_vec *bvec = &data->bvec_pos.bvecs[i];
+			struct kvec *kvec = &vec_data->kvec[i];
+
+			kvec->iov_base = page_address(bvec->bv_page) +
+				bvec->bv_offset;
+			kvec->iov_len = bvec->bv_len;
+		}
+	} else if (data->type == CEPH_MSG_DATA_PAGELIST) {
+		struct ceph_pagelist *pl = data->pagelist;
+		struct page *page;
+
+		i = 0;
+		list_for_each_entry(page, &pl->head, lru) {
+			struct kvec *kvec;
+
+			BUG_ON(i == nr_segs);
+
+			kvec = &vec_data->kvec[i++];
+			kvec->iov_base = page_address(page);
+			kvec->iov_len = PAGE_SIZE;
+		}
+	} else {
+		BUG();
+	}
+
+	return vec_data;
+}
+
+/**
+ * osds_cls_execute_op() - back call for OSD class, which execute another
+ *                         operation.
+ */
+static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
+			       struct ceph_osd_op *raw_op,
+			       struct ceph_kvec *in,
+			       struct ceph_kvec **out)
+{
+	struct osds_cls_call_ctx *osds_ctx;
+	struct ceph_msg_data_cursor in_cur;
+	struct ceph_msg_data in_data;
+	struct ceph_osd_req_op op;
+	int ret;
+
+	osds_ctx = container_of(ctx, typeof(*osds_ctx), ctx);
+
+	/* Fill in osd request op */
+	ret = osd_op_to_req_op(raw_op, &op);
+	if (ret)
+		return ret;
+
+	if (WARN_ON(op.op == CEPH_OSD_OP_CALL))
+		/* Avoid recursion */
+		return -EINVAL;
+
+	/* Init msg data with input kvec */
+	ceph_msg_data_kvec_init(&in_data, in);
+
+	/* Init iterator for input data */
+	ceph_msg_data_cursor_init(&in_cur, &in_data, WRITE, in->length);
+
+	ret = handle_osd_op(osds_ctx->msg, osds_ctx->req, &op, &in_cur);
+	if (ret)
+		return ret;
+
+	if (op.outdata) {
+		struct ceph_msg_data_kvec *vec_data;
+
+		vec_data = alloc_msg_data_kvec(op.outdata);
+		if (!vec_data) {
+			ceph_msg_data_release(op.outdata);
+			return -ENOMEM;
+		}
+		*out = &vec_data->vec;
+	}
+
+	return 0;
+}
+
+static struct ceph_cls_callback_ops cls_callback_ops = {
+	.execute_op   = osds_cls_execute_op,
+	.describe_req = osds_cls_request_desc,
+};
+
+static int handle_osd_op_call(struct ceph_msg *msg,
+			      struct ceph_msg_osd_op *req,
+			      struct ceph_osd_req_op *op,
+			      struct ceph_msg_data_cursor *in_cur)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct osds_cls_call_ctx osds_ctx;
+	struct ceph_kvec *out = NULL;
+	char cname[16], mname[128];
+	void *ptr, *indata;
+	int ret;
+
+	if (!op->cls.class_len || !op->cls.method_len)
+		return -EINVAL;
+
+	if (op->cls.class_len > sizeof(cname) - 1) {
+		pr_warn("class name is long: %d\n", op->cls.class_len);
+		return -EINVAL;
+	}
+	if (op->cls.method_len > sizeof(mname) - 1) {
+		pr_warn("method name is long: %d\n", op->cls.method_len);
+		return -EINVAL;
+	}
+
+	if (op->cls.class_len + op->cls.method_len +
+	    op->cls.indata_len > msg->data_length)
+		return -EINVAL;
+
+	ceph_msg_data_cursor_next(in_cur);
+	BUG_ON(in_cur->iter.nr_segs != 1);
+
+	if (iter_is_iovec(&in_cur->iter))
+		ptr = in_cur->iter.iov->iov_base;
+	else if (iov_iter_is_kvec(&in_cur->iter))
+		ptr = in_cur->iter.kvec->iov_base;
+	else if (iov_iter_is_bvec(&in_cur->iter))
+		ptr = page_address(in_cur->iter.bvec->bv_page);
+	else
+		BUG();
+
+	ptr += in_cur->iter.iov_offset;
+
+	memcpy(cname, ptr, op->cls.class_len);
+	memcpy(mname, ptr + op->cls.class_len, op->cls.method_len);
+	cname[op->cls.class_len] = '\0';
+	mname[op->cls.method_len] = '\0';
+	indata = ptr + op->cls.class_len + op->cls.method_len;
+
+	ceph_msg_data_cursor_advance(in_cur, op->cls.class_len +
+				     op->cls.method_len + op->cls.indata_len);
+
+	osds_ctx = (struct osds_cls_call_ctx) {
+		.ctx = {
+			.ops    = &cls_callback_ops,
+			.in     = indata,
+			.in_len = op->cls.indata_len,
+			.out    = &out
+		},
+		.msg = msg,
+		.req = req,
+	};
+	ret = ceph_cls_method_call(&osds->class_loader, cname, mname,
+				   &osds_ctx.ctx);
+	if (ret)
+		return ret;
+
+	if (out) {
+		BUG_ON(!out->length);
+
+		/* Setup output length */
+		op->outdata_len = out->length;
+		op->outdata = &op->raw_data;
+
+		/* Give ownership to msg */
+		ceph_msg_data_kvec_init(&op->raw_data, out);
+	}
+
+	return 0;
+}
+
 static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 			 struct ceph_osd_req_op *op,
 			 struct ceph_msg_data_cursor *in_cur)
@@ -932,6 +1266,9 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		break;
 	case CEPH_OSD_OP_STAT:
 		ret = handle_osd_op_stat(msg, req, op);
+		break;
+	case CEPH_OSD_OP_CALL:
+		ret = handle_osd_op_call(msg, req, op, in_cur);
 		break;
 	default:
 		pr_err("%s: unknown op type 0x%x\n",
@@ -1084,6 +1421,7 @@ ceph_create_osd_server(struct ceph_options *opt, int osd)
 
 	osds->osd = osd;
 	osds->s_objects = RB_ROOT;
+	ceph_cls_init(&osds->class_loader, opt);
 
 	client = __ceph_create_client(opt, osds, CEPH_ENTITY_TYPE_OSD,
 				      osd, CEPH_FEATURES_SUPPORTED_OSD,
@@ -1166,6 +1504,7 @@ void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 	ceph_stop_osd_server(osds);
 	ceph_destroy_client(osds->client);
 	destroy_objects(osds);
+	ceph_cls_deinit(&osds->class_loader);
 	kfree(osds);
 }
 
