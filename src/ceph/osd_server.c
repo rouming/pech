@@ -181,9 +181,9 @@ bad:
  */
 static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			     struct ceph_osd_req_op *src,
-			     struct ceph_osd_data **pdata)
+			     struct ceph_msg_data **pdata)
 {
-	struct ceph_osd_data *data = NULL;
+	struct ceph_msg_data *data = NULL;
 
 	switch (src->op) {
 	case CEPH_OSD_OP_STAT:
@@ -344,14 +344,14 @@ create_osd_op_reply(struct ceph_msg_osd_op *req,
 	data_len = 0;
 	for (i = 0; i < req->num_ops; i++) {
 		struct ceph_osd_req_op *src_op = &req->ops[i];
-		struct ceph_osd_data *osd_data;
+		struct ceph_msg_data *osd_data;
 		struct ceph_osd_op *dst_op = p;
 
 		data_len += osd_req_encode_op(dst_op, src_op, &osd_data);
 		p += sizeof(struct ceph_osd_op);
 
 		if (osd_data)
-			ceph_osdc_msg_data_add(msg, osd_data);
+			ceph_msg_data_add(msg, osd_data);
 	}
 	msg->hdr.data_len = cpu_to_le32(data_len);
 
@@ -439,7 +439,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 
 	switch (dst->op) {
 	case CEPH_OSD_OP_STAT:
-		dst->raw_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->raw_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_WRITE:
@@ -452,15 +452,15 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 			le64_to_cpu(src->extent.truncate_size);
 		dst->extent.truncate_seq =
 			le32_to_cpu(src->extent.truncate_seq);
-		dst->extent.osd_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->extent.osd_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_CALL:
 		dst->cls.class_len = src->cls.class_len;
 		dst->cls.method_len = src->cls.method_len;
 		dst->cls.indata_len = le32_to_cpu(src->cls.indata_len);
-		dst->cls.request_info.type = CEPH_OSD_DATA_TYPE_NONE;
-		dst->cls.request_data.type = CEPH_OSD_DATA_TYPE_NONE;
-		dst->cls.response_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->cls.request_info.type = CEPH_MSG_DATA_NONE;
+		dst->cls.request_data.type = CEPH_MSG_DATA_NONE;
+		dst->cls.response_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_WATCH:
 		dst->watch.cookie = le64_to_cpu(src->watch.cookie);
@@ -468,15 +468,15 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->watch.gen = le32_to_cpu(src->watch.gen);
 		break;
 	case CEPH_OSD_OP_NOTIFY_ACK:
-		dst->notify_ack.request_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->notify_ack.request_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_NOTIFY:
 		dst->notify.cookie = le64_to_cpu(src->notify.cookie);
-		dst->notify.request_data.type = CEPH_OSD_DATA_TYPE_NONE;
-		dst->notify.response_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->notify.request_data.type = CEPH_MSG_DATA_NONE;
+		dst->notify.response_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_LIST_WATCHERS:
-		dst->notify.response_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->notify.response_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_SETALLOCHINT:
 		dst->alloc_hint.expected_object_size =
@@ -490,7 +490,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->xattr.value_len = le32_to_cpu(src->xattr.value_len);
 		dst->xattr.cmp_op = src->xattr.cmp_op;
 		dst->xattr.cmp_mode = src->xattr.cmp_mode;
-		dst->xattr.osd_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->xattr.osd_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_CREATE:
 	case CEPH_OSD_OP_DELETE:
@@ -502,7 +502,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->copy_from.flags = src->copy_from.flags;
 		dst->copy_from.src_fadvise_flags =
 			le32_to_cpu(src->copy_from.src_fadvise_flags);
-		dst->copy_from.osd_data.type = CEPH_OSD_DATA_TYPE_NONE;
+		dst->copy_from.osd_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	default:
 		pr_err("unsupported osd opcode %s\n",
@@ -833,7 +833,7 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 		return ret;
 
 	/* Give ownership to msg */
-	ceph_osd_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
+	ceph_msg_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
 
 	/* Setup output length */
 	op->outdata_len = len_read;
@@ -922,7 +922,7 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 	op->outdata_len = outdata_len;
 
 	/* Give ownership to msg */
-	ceph_osd_data_bvecs_init(&op->raw_data, &it, 1, true);
+	ceph_msg_data_bvecs_init(&op->raw_data, &it, 1, true);
 
 	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
 	ceph_encode_timespec64(&ts, &obj->o_mtime);

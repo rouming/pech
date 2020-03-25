@@ -95,26 +95,26 @@ struct ceph_osd_req_op {
 	s32 rval;
 
 	union {
-		struct ceph_osd_data raw_data;
+		struct ceph_msg_data raw_data;
 		struct {
 			u64 offset, length;
 			u64 truncate_size;
 			u32 truncate_seq;
-			struct ceph_osd_data osd_data;
+			struct ceph_msg_data osd_data;
 		} extent;
 		struct {
 			u32 name_len;
 			u32 value_len;
 			__u8 cmp_op;       /* CEPH_OSD_CMPXATTR_OP_* */
 			__u8 cmp_mode;     /* CEPH_OSD_CMPXATTR_MODE_* */
-			struct ceph_osd_data osd_data;
+			struct ceph_msg_data osd_data;
 		} xattr;
 		struct {
 			const char *class_name;
 			const char *method_name;
-			struct ceph_osd_data request_info;
-			struct ceph_osd_data request_data;
-			struct ceph_osd_data response_data;
+			struct ceph_msg_data request_info;
+			struct ceph_msg_data request_data;
+			struct ceph_msg_data response_data;
 			__u8 class_len;
 			__u8 method_len;
 			u32 indata_len;
@@ -125,15 +125,15 @@ struct ceph_osd_req_op {
 			u32 gen;
 		} watch;
 		struct {
-			struct ceph_osd_data request_data;
+			struct ceph_msg_data request_data;
 		} notify_ack;
 		struct {
 			u64 cookie;
-			struct ceph_osd_data request_data;
-			struct ceph_osd_data response_data;
+			struct ceph_msg_data request_data;
+			struct ceph_msg_data response_data;
 		} notify;
 		struct {
-			struct ceph_osd_data response_data;
+			struct ceph_msg_data response_data;
 		} list_watchers;
 		struct {
 			u64 expected_object_size;
@@ -144,7 +144,7 @@ struct ceph_osd_req_op {
 			u64 src_version;
 			u8 flags;
 			u32 src_fadvise_flags;
-			struct ceph_osd_data osd_data;
+			struct ceph_msg_data osd_data;
 		} copy_from;
 	};
 };
@@ -425,7 +425,7 @@ extern void osd_req_op_extent_update(struct ceph_osd_request *osd_req,
 extern void osd_req_op_extent_dup_last(struct ceph_osd_request *osd_req,
 				       unsigned int which, u64 offset_inc);
 
-extern struct ceph_osd_data *osd_req_op_extent_osd_data(
+extern struct ceph_msg_data *osd_req_op_extent_osd_data(
 					struct ceph_osd_request *osd_req,
 					unsigned int which);
 

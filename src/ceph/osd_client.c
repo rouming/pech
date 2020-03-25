@@ -133,6 +133,7 @@ static void ceph_osd_data_init(struct ceph_osd_data *osd_data)
 /*
  * Consumes @pages if @own_pages is true.
  */
+__attribute__((unused))
 static void ceph_osd_data_pages_init(struct ceph_osd_data *osd_data,
 			struct page **pages, u64 length, u32 alignment,
 			bool pages_from_pool, bool own_pages)
@@ -148,6 +149,7 @@ static void ceph_osd_data_pages_init(struct ceph_osd_data *osd_data,
 /*
  * Consumes a ref on @pagelist.
  */
+__attribute__((unused))
 static void ceph_osd_data_pagelist_init(struct ceph_osd_data *osd_data,
 			struct ceph_pagelist *pagelist)
 {
@@ -177,7 +179,7 @@ void ceph_osd_data_bvecs_init(struct ceph_osd_data *osd_data,
 }
 EXPORT_SYMBOL(osd_osd_data_bvecs_init);
 
-static struct ceph_osd_data *
+static struct ceph_msg_data *
 osd_req_op_raw_data_in(struct ceph_osd_request *osd_req, unsigned int which)
 {
 	BUG_ON(which >= osd_req->r_num_ops);
@@ -185,7 +187,7 @@ osd_req_op_raw_data_in(struct ceph_osd_request *osd_req, unsigned int which)
 	return &osd_req->r_ops[which].raw_data;
 }
 
-struct ceph_osd_data *
+struct ceph_msg_data *
 osd_req_op_extent_osd_data(struct ceph_osd_request *osd_req,
 			unsigned int which)
 {
@@ -198,10 +200,10 @@ void osd_req_op_raw_data_in_pages(struct ceph_osd_request *osd_req,
 			u64 length, u32 alignment,
 			bool pages_from_pool, bool own_pages)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_raw_data_in(osd_req, which);
-	ceph_osd_data_pages_init(osd_data, pages, length, alignment,
+	ceph_msg_data_pages_init(osd_data, pages, length, alignment,
 				pages_from_pool, own_pages);
 }
 EXPORT_SYMBOL(osd_req_op_raw_data_in_pages);
@@ -211,10 +213,10 @@ void osd_req_op_extent_osd_data_pages(struct ceph_osd_request *osd_req,
 			u64 length, u32 alignment,
 			bool pages_from_pool, bool own_pages)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, extent, osd_data);
-	ceph_osd_data_pages_init(osd_data, pages, length, alignment,
+	ceph_msg_data_pages_init(osd_data, pages, length, alignment,
 				pages_from_pool, own_pages);
 }
 EXPORT_SYMBOL(osd_req_op_extent_osd_data_pages);
@@ -222,10 +224,10 @@ EXPORT_SYMBOL(osd_req_op_extent_osd_data_pages);
 void osd_req_op_extent_osd_data_pagelist(struct ceph_osd_request *osd_req,
 			unsigned int which, struct ceph_pagelist *pagelist)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, extent, osd_data);
-	ceph_osd_data_pagelist_init(osd_data, pagelist);
+	ceph_msg_data_pagelist_init(osd_data, pagelist);
 }
 EXPORT_SYMBOL(osd_req_op_extent_osd_data_pagelist);
 
@@ -235,10 +237,10 @@ void osd_req_op_extent_osd_data_bio(struct ceph_osd_request *osd_req,
 				    struct ceph_bio_iter *bio_pos,
 				    u32 bio_length)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, extent, osd_data);
-	ceph_osd_data_bio_init(osd_data, bio_pos, bio_length);
+	ceph_msg_data_bio_init(osd_data, bio_pos, bio_length);
 }
 EXPORT_SYMBOL(osd_req_op_extent_osd_data_bio);
 #endif /* CONFIG_BLOCK */
@@ -248,14 +250,14 @@ void osd_req_op_extent_osd_data_bvecs(struct ceph_osd_request *osd_req,
 				      struct bio_vec *bvecs, u32 num_bvecs,
 				      u32 bytes, bool own_bvecs)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 	struct ceph_bvec_iter it = {
 		.bvecs = bvecs,
 		.iter = { .bi_size = bytes },
 	};
 
 	osd_data = osd_req_op_data(osd_req, which, extent, osd_data);
-	ceph_osd_data_bvecs_init(osd_data, &it, num_bvecs, own_bvecs);
+	ceph_msg_data_bvecs_init(osd_data, &it, num_bvecs, own_bvecs);
 }
 EXPORT_SYMBOL(osd_req_op_extent_osd_data_bvecs);
 
@@ -263,10 +265,10 @@ void osd_req_op_extent_osd_data_bvec_pos(struct ceph_osd_request *osd_req,
 					 unsigned int which,
 					 struct ceph_bvec_iter *bvec_pos)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, extent, osd_data);
-	ceph_osd_data_bvecs_init(osd_data, bvec_pos, 0, false);
+	ceph_msg_data_bvecs_init(osd_data, bvec_pos, 0, false);
 }
 EXPORT_SYMBOL(osd_req_op_extent_osd_data_bvec_pos);
 
@@ -274,20 +276,20 @@ static void osd_req_op_cls_request_info_pagelist(
 			struct ceph_osd_request *osd_req,
 			unsigned int which, struct ceph_pagelist *pagelist)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, cls, request_info);
-	ceph_osd_data_pagelist_init(osd_data, pagelist);
+	ceph_msg_data_pagelist_init(osd_data, pagelist);
 }
 
 void osd_req_op_cls_request_data_pagelist(
 			struct ceph_osd_request *osd_req,
 			unsigned int which, struct ceph_pagelist *pagelist)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, cls, request_data);
-	ceph_osd_data_pagelist_init(osd_data, pagelist);
+	ceph_msg_data_pagelist_init(osd_data, pagelist);
 	osd_req->r_ops[which].cls.indata_len += pagelist->length;
 	osd_req->r_ops[which].indata_len += pagelist->length;
 }
@@ -297,10 +299,10 @@ void osd_req_op_cls_request_data_pages(struct ceph_osd_request *osd_req,
 			unsigned int which, struct page **pages, u64 length,
 			u32 alignment, bool pages_from_pool, bool own_pages)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, cls, request_data);
-	ceph_osd_data_pages_init(osd_data, pages, length, alignment,
+	ceph_msg_data_pages_init(osd_data, pages, length, alignment,
 				pages_from_pool, own_pages);
 	osd_req->r_ops[which].cls.indata_len += length;
 	osd_req->r_ops[which].indata_len += length;
@@ -312,14 +314,14 @@ void osd_req_op_cls_request_data_bvecs(struct ceph_osd_request *osd_req,
 				       struct bio_vec *bvecs, u32 num_bvecs,
 				       u32 bytes)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 	struct ceph_bvec_iter it = {
 		.bvecs = bvecs,
 		.iter = { .bi_size = bytes },
 	};
 
 	osd_data = osd_req_op_data(osd_req, which, cls, request_data);
-	ceph_osd_data_bvecs_init(osd_data, &it, num_bvecs, false);
+	ceph_msg_data_bvecs_init(osd_data, &it, num_bvecs, false);
 	osd_req->r_ops[which].cls.indata_len += bytes;
 	osd_req->r_ops[which].indata_len += bytes;
 }
@@ -329,10 +331,10 @@ void osd_req_op_cls_response_data_pages(struct ceph_osd_request *osd_req,
 			unsigned int which, struct page **pages, u64 length,
 			u32 alignment, bool pages_from_pool, bool own_pages)
 {
-	struct ceph_osd_data *osd_data;
+	struct ceph_msg_data *osd_data;
 
 	osd_data = osd_req_op_data(osd_req, which, cls, response_data);
-	ceph_osd_data_pages_init(osd_data, pages, length, alignment,
+	ceph_msg_data_pages_init(osd_data, pages, length, alignment,
 				pages_from_pool, own_pages);
 }
 EXPORT_SYMBOL(osd_req_op_cls_response_data_pages);
@@ -358,6 +360,7 @@ static u64 ceph_osd_data_length(struct ceph_osd_data *osd_data)
 	}
 }
 
+__attribute__((unused))
 static void ceph_osd_data_release(struct ceph_osd_data *osd_data)
 {
 	if (osd_data->type == CEPH_OSD_DATA_TYPE_PAGES && osd_data->own_pages) {
@@ -384,32 +387,32 @@ static void osd_req_op_data_release(struct ceph_osd_request *osd_req,
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
-		ceph_osd_data_release(&op->extent.osd_data);
+		ceph_msg_data_release(&op->extent.osd_data);
 		break;
 	case CEPH_OSD_OP_CALL:
-		ceph_osd_data_release(&op->cls.request_info);
-		ceph_osd_data_release(&op->cls.request_data);
-		ceph_osd_data_release(&op->cls.response_data);
+		ceph_msg_data_release(&op->cls.request_info);
+		ceph_msg_data_release(&op->cls.request_data);
+		ceph_msg_data_release(&op->cls.response_data);
 		break;
 	case CEPH_OSD_OP_SETXATTR:
 	case CEPH_OSD_OP_CMPXATTR:
-		ceph_osd_data_release(&op->xattr.osd_data);
+		ceph_msg_data_release(&op->xattr.osd_data);
 		break;
 	case CEPH_OSD_OP_STAT:
-		ceph_osd_data_release(&op->raw_data);
+		ceph_msg_data_release(&op->raw_data);
 		break;
 	case CEPH_OSD_OP_NOTIFY_ACK:
-		ceph_osd_data_release(&op->notify_ack.request_data);
+		ceph_msg_data_release(&op->notify_ack.request_data);
 		break;
 	case CEPH_OSD_OP_NOTIFY:
-		ceph_osd_data_release(&op->notify.request_data);
-		ceph_osd_data_release(&op->notify.response_data);
+		ceph_msg_data_release(&op->notify.request_data);
+		ceph_msg_data_release(&op->notify.response_data);
 		break;
 	case CEPH_OSD_OP_LIST_WATCHERS:
-		ceph_osd_data_release(&op->list_watchers.response_data);
+		ceph_msg_data_release(&op->list_watchers.response_data);
 		break;
 	case CEPH_OSD_OP_COPY_FROM2:
-		ceph_osd_data_release(&op->copy_from.osd_data);
+		ceph_msg_data_release(&op->copy_from.osd_data);
 		break;
 	default:
 		break;
@@ -914,7 +917,7 @@ int osd_req_op_xattr_init(struct ceph_osd_request *osd_req, unsigned int which,
 	op->xattr.cmp_op = cmp_op;
 	op->xattr.cmp_mode = cmp_mode;
 
-	ceph_osd_data_pagelist_init(&op->xattr.osd_data, pagelist);
+	ceph_msg_data_pagelist_init(&op->xattr.osd_data, pagelist);
 	op->indata_len = payload_len;
 	return 0;
 
@@ -2000,36 +2003,32 @@ static void setup_request_data(struct ceph_osd_request *req)
 		case CEPH_OSD_OP_WRITE:
 		case CEPH_OSD_OP_WRITEFULL:
 			WARN_ON(op->indata_len != op->extent.length);
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->extent.osd_data);
+			ceph_msg_data_add(request_msg, &op->extent.osd_data);
 			break;
 		case CEPH_OSD_OP_SETXATTR:
 		case CEPH_OSD_OP_CMPXATTR:
 			WARN_ON(op->indata_len != op->xattr.name_len +
 						  op->xattr.value_len);
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->xattr.osd_data);
+			ceph_msg_data_add(request_msg, &op->xattr.osd_data);
 			break;
 		case CEPH_OSD_OP_NOTIFY_ACK:
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->notify_ack.request_data);
+			ceph_msg_data_add(request_msg,
+					  &op->notify_ack.request_data);
 			break;
 		case CEPH_OSD_OP_COPY_FROM2:
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->copy_from.osd_data);
+			ceph_msg_data_add(request_msg, &op->copy_from.osd_data);
 			break;
 
 		/* reply */
 		case CEPH_OSD_OP_STAT:
-			ceph_osdc_msg_data_add(reply_msg, &op->raw_data);
+			ceph_msg_data_add(reply_msg, &op->raw_data);
 			break;
 		case CEPH_OSD_OP_READ:
-			ceph_osdc_msg_data_add(reply_msg,
-					       &op->extent.osd_data);
+			ceph_msg_data_add(reply_msg, &op->extent.osd_data);
 			break;
 		case CEPH_OSD_OP_LIST_WATCHERS:
-			ceph_osdc_msg_data_add(reply_msg,
-					       &op->list_watchers.response_data);
+			ceph_msg_data_add(reply_msg,
+					  &op->list_watchers.response_data);
 			break;
 
 		/* both */
@@ -2037,20 +2036,17 @@ static void setup_request_data(struct ceph_osd_request *req)
 			WARN_ON(op->indata_len != op->cls.class_len +
 						  op->cls.method_len +
 						  op->cls.indata_len);
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->cls.request_info);
+			ceph_msg_data_add(request_msg, &op->cls.request_info);
 			/* optional, can be NONE */
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->cls.request_data);
+			ceph_msg_data_add(request_msg, &op->cls.request_data);
 			/* optional, can be NONE */
-			ceph_osdc_msg_data_add(reply_msg,
-					       &op->cls.response_data);
+			ceph_msg_data_add(reply_msg, &op->cls.response_data);
 			break;
 		case CEPH_OSD_OP_NOTIFY:
-			ceph_osdc_msg_data_add(request_msg,
-					       &op->notify.request_data);
-			ceph_osdc_msg_data_add(reply_msg,
-					       &op->notify.response_data);
+			ceph_msg_data_add(request_msg,
+					  &op->notify.request_data);
+			ceph_msg_data_add(reply_msg,
+					  &op->notify.response_data);
 			break;
 		}
 	}
@@ -2989,12 +2985,12 @@ static void linger_commit_cb(struct ceph_osd_request *req)
 	lreq->committed = true;
 
 	if (!lreq->is_watch) {
-		struct ceph_osd_data *osd_data =
+		struct ceph_msg_data *osd_data =
 		    osd_req_op_data(req, 0, notify, response_data);
 		void *p = page_address(osd_data->pages[0]);
 
 		WARN_ON(req->r_ops[0].op != CEPH_OSD_OP_NOTIFY ||
-			osd_data->type != CEPH_OSD_DATA_TYPE_PAGES);
+			osd_data->type != CEPH_MSG_DATA_PAGES);
 
 		/* make note of the notify_id */
 		if (req->r_ops[0].outdata_len >= sizeof(u64)) {
@@ -4797,7 +4793,7 @@ static int osd_req_op_notify_ack_init(struct ceph_osd_request *req, int which,
 		return -ENOMEM;
 	}
 
-	ceph_osd_data_pagelist_init(&op->notify_ack.request_data, pl);
+	ceph_msg_data_pagelist_init(&op->notify_ack.request_data, pl);
 	op->indata_len = pl->length;
 	return 0;
 }
@@ -4863,7 +4859,7 @@ static int osd_req_op_notify_init(struct ceph_osd_request *req, int which,
 		return -ENOMEM;
 	}
 
-	ceph_osd_data_pagelist_init(&op->notify.request_data, pl);
+	ceph_msg_data_pagelist_init(&op->notify.request_data, pl);
 	op->indata_len = pl->length;
 	return 0;
 }
@@ -4927,7 +4923,7 @@ int ceph_osdc_notify(struct ceph_osd_client *osdc,
 		ret = PTR_ERR(pages);
 		goto out_put_lreq;
 	}
-	ceph_osd_data_pages_init(osd_req_op_data(lreq->reg_req, 0, notify,
+	ceph_msg_data_pages_init(osd_req_op_data(lreq->reg_req, 0, notify,
 						 response_data),
 				 pages, PAGE_SIZE, 0, false, true);
 
@@ -5074,7 +5070,7 @@ int ceph_osdc_list_watchers(struct ceph_osd_client *osdc,
 	}
 
 	osd_req_op_init(req, 0, CEPH_OSD_OP_LIST_WATCHERS, 0);
-	ceph_osd_data_pages_init(osd_req_op_data(req, 0, list_watchers,
+	ceph_msg_data_pages_init(osd_req_op_data(req, 0, list_watchers,
 						 response_data),
 				 pages, PAGE_SIZE, 0, false, true);
 
@@ -5405,7 +5401,7 @@ static int osd_req_op_copy_from_init(struct ceph_osd_request *req,
 	ceph_encode_64(&p, truncate_size);
 	op->indata_len = PAGE_SIZE - (end - p);
 
-	ceph_osd_data_pages_init(&op->copy_from.osd_data, pages,
+	ceph_msg_data_pages_init(&op->copy_from.osd_data, pages,
 				 op->indata_len, 0, false, true);
 	return 0;
 }
