@@ -95,7 +95,7 @@ struct ceph_osd_req_op {
 	s32 rval;
 
 	union {
-		struct ceph_osd_data raw_data_in;
+		struct ceph_osd_data raw_data;
 		struct {
 			u64 offset, length;
 			u64 truncate_size;

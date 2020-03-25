@@ -182,7 +182,7 @@ osd_req_op_raw_data_in(struct ceph_osd_request *osd_req, unsigned int which)
 {
 	BUG_ON(which >= osd_req->r_num_ops);
 
-	return &osd_req->r_ops[which].raw_data_in;
+	return &osd_req->r_ops[which].raw_data;
 }
 
 struct ceph_osd_data *
@@ -396,7 +396,7 @@ static void osd_req_op_data_release(struct ceph_osd_request *osd_req,
 		ceph_osd_data_release(&op->xattr.osd_data);
 		break;
 	case CEPH_OSD_OP_STAT:
-		ceph_osd_data_release(&op->raw_data_in);
+		ceph_osd_data_release(&op->raw_data);
 		break;
 	case CEPH_OSD_OP_NOTIFY_ACK:
 		ceph_osd_data_release(&op->notify_ack.request_data);
@@ -2020,8 +2020,7 @@ static void setup_request_data(struct ceph_osd_request *req)
 
 		/* reply */
 		case CEPH_OSD_OP_STAT:
-			ceph_osdc_msg_data_add(reply_msg,
-					       &op->raw_data_in);
+			ceph_osdc_msg_data_add(reply_msg, &op->raw_data);
 			break;
 		case CEPH_OSD_OP_READ:
 			ceph_osdc_msg_data_add(reply_msg,
