@@ -302,11 +302,11 @@ create_osd_op_reply(struct ceph_msg_osd_op *req,
 	msg_size += 8; /* user_version */
 	msg_size += 1; /* do_redirect */
 
-	/* Count number of items for reply, for now account only reads */
+	/* Count number of items for reply */
 	for (n_items = 0, i = 0; i < req->num_ops; i++) {
 		struct ceph_osd_req_op *op = &req->ops[i];
 
-		if (op->op == CEPH_OSD_OP_READ)
+		if (op->outdata_len)
 			n_items++;
 	}
 	msg = ceph_msg_new2(CEPH_MSG_OSD_OPREPLY, msg_size,
