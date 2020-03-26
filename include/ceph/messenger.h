@@ -219,7 +219,6 @@ struct ceph_msg_data_cursor {
 	unsigned int            direction;      /* data direction */
 	size_t			resid;		/* bytes not yet consumed */
 	bool			last_piece;	/* current is last piece */
-	bool			need_crc;	/* crc update needed */
 	union {
 #ifdef CONFIG_BLOCK
 		struct ceph_bio_iter	bio_iter;

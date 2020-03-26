@@ -923,8 +923,8 @@ static struct page *ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor,
 	return bv.bv_page;
 }
 
-static bool ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
-					size_t bytes)
+static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
+				      size_t bytes)
 {
 	struct ceph_bio_iter *it = &cursor->bio_iter;
 	struct page *page = bio_iter_page(it->bio, it->iter);
@@ -936,12 +936,12 @@ static bool ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 
 	if (!cursor->resid) {
 		BUG_ON(!cursor->last_piece);
-		return false;   /* no more data */
+		return;   /* no more data */
 	}
 
 	if (!bytes || (it->iter.bi_size && it->iter.bi_bvec_done &&
 		       page == bio_iter_page(it->bio, it->iter)))
-		return false;	/* more bytes to process in this segment */
+		return;	/* more bytes to process in this segment */
 
 	if (!it->iter.bi_size) {
 		it->bio = it->bio->bi_next;
@@ -953,7 +953,6 @@ static bool ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(cursor->last_piece);
 	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
 	cursor->last_piece = cursor->resid == bio_iter_len(it->bio, it->iter);
-	return true;
 }
 #endif /* CONFIG_BLOCK */
 
@@ -984,7 +983,7 @@ static struct page *ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor
 	return bv.bv_page;
 }
 
-static bool ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
+static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 					size_t bytes)
 {
 	struct bio_vec *bvecs = cursor->data->bvec_pos.bvecs;
@@ -997,18 +996,17 @@ static bool ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 
 	if (!cursor->resid) {
 		BUG_ON(!cursor->last_piece);
-		return false;   /* no more data */
+		return;   /* no more data */
 	}
 
 	if (!bytes || (cursor->bvec_iter.bi_bvec_done &&
 		       page == bvec_iter_page(bvecs, cursor->bvec_iter)))
-		return false;	/* more bytes to process in this segment */
+		return;	/* more bytes to process in this segment */
 
 	BUG_ON(cursor->last_piece);
 	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
 	cursor->last_piece =
 	    cursor->resid == bvec_iter_len(bvecs, cursor->bvec_iter);
-	return true;
 }
 
 /*
@@ -1056,8 +1054,8 @@ ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor,
 	return data->pages[cursor->page_index];
 }
 
-static bool ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
-						size_t bytes)
+static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
+					size_t bytes)
 {
 	BUG_ON(cursor->data->type != CEPH_MSG_DATA_PAGES);
 
@@ -1068,18 +1066,16 @@ static bool ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
 	cursor->resid -= bytes;
 	cursor->page_offset = (cursor->page_offset + bytes) & ~PAGE_MASK;
 	if (!bytes || cursor->page_offset)
-		return false;	/* more bytes to process in the current page */
+		return;	/* more bytes to process in the current page */
 
 	if (!cursor->resid)
-		return false;   /* no more data */
+		return;   /* no more data */
 
 	/* Move on to the next page; offset is already at 0 */
 
 	BUG_ON(cursor->page_index >= cursor->page_count);
 	cursor->page_index++;
 	cursor->last_piece = cursor->resid <= PAGE_SIZE;
-
-	return true;
 }
 
 /*
@@ -1136,8 +1132,8 @@ ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor,
 	return cursor->page;
 }
 
-static bool ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
-						size_t bytes)
+static void ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
+					   size_t bytes)
 {
 	struct ceph_msg_data *data = cursor->data;
 	struct ceph_pagelist *pagelist;
@@ -1156,18 +1152,16 @@ static bool ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
 	cursor->offset += bytes;
 	/* offset of first page in pagelist is always 0 */
 	if (!bytes || cursor->offset & ~PAGE_MASK)
-		return false;	/* more bytes to process in the current page */
+		return;	/* more bytes to process in the current page */
 
 	if (!cursor->resid)
-		return false;   /* no more data */
+		return;   /* no more data */
 
 	/* Move on to the next page */
 
 	BUG_ON(list_is_last(&cursor->page->lru, &pagelist->head));
 	cursor->page = list_next_entry(cursor->page, lru);
 	cursor->last_piece = cursor->resid <= PAGE_SIZE;
-
-	return true;
 }
 
 /*
@@ -1197,7 +1191,6 @@ static void __ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor)
 		/* BUG(); */
 		break;
 	}
-	cursor->need_crc = true;
 }
 
 static void ceph_msg_data_cursor_init(unsigned int dir, struct ceph_msg *msg,
@@ -1258,30 +1251,24 @@ static void ceph_msg_data_next(struct ceph_msg_data_cursor *cursor)
 		      &cursor->tmp_bvec, 1, len);
 }
 
-/*
- * Returns true if the result moves the cursor on to the next piece
- * of the data item.
- */
 static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
 				  size_t bytes)
 {
-	bool new_piece;
-
 	BUG_ON(bytes > cursor->resid);
 	switch (cursor->data->type) {
 	case CEPH_MSG_DATA_PAGELIST:
-		new_piece = ceph_msg_data_pagelist_advance(cursor, bytes);
+		ceph_msg_data_pagelist_advance(cursor, bytes);
 		break;
 	case CEPH_MSG_DATA_PAGES:
-		new_piece = ceph_msg_data_pages_advance(cursor, bytes);
+		ceph_msg_data_pages_advance(cursor, bytes);
 		break;
 #ifdef CONFIG_BLOCK
 	case CEPH_MSG_DATA_BIO:
-		new_piece = ceph_msg_data_bio_advance(cursor, bytes);
+		ceph_msg_data_bio_advance(cursor, bytes);
 		break;
 #endif /* CONFIG_BLOCK */
 	case CEPH_MSG_DATA_BVECS:
-		new_piece = ceph_msg_data_bvecs_advance(cursor, bytes);
+		ceph_msg_data_bvecs_advance(cursor, bytes);
 		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
@@ -1294,9 +1281,7 @@ static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
 		WARN_ON(!cursor->last_piece);
 		cursor->data++;
 		__ceph_msg_data_cursor_init(cursor);
-		new_piece = true;
 	}
-	cursor->need_crc = new_piece;
 }
 
 static size_t sizeof_footer(struct ceph_connection *con)
@@ -1787,7 +1772,7 @@ static int write_partial_message_data(struct ceph_connection *con)
 
 			return ret;
 		}
-		if (do_datacrc && cursor->need_crc)
+		if (do_datacrc)
 			crc = ceph_crc32c_iov(crc, &cursor->iter, ret);
 		ceph_msg_data_advance(cursor, (size_t)ret);
 	}
