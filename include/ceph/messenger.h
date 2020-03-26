@@ -214,6 +214,9 @@ struct ceph_msg_data_cursor {
 	size_t			total_resid;	/* across all data items */
 
 	struct ceph_msg_data	*data;		/* current data item */
+	struct iov_iter         iter;           /* iterator for current data */
+	struct bio_vec          tmp_bvec;       /* will be removed ASAP */
+	unsigned int            direction;      /* data direction */
 	size_t			resid;		/* bytes not yet consumed */
 	bool			last_piece;	/* current is last piece */
 	bool			need_crc;	/* crc update needed */
