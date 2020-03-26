@@ -942,13 +942,8 @@ static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 	cursor->resid -= bytes;
 	bio_advance_iter(it->bio, &it->iter, bytes);
 
-	if (!cursor->resid) {
+	if (!bytes || !cursor->resid)
 		return;   /* no more data */
-	}
-
-	if (!bytes || (it->iter.bi_size && it->iter.bi_bvec_done &&
-		       page == bio_iter_page(it->bio, it->iter)))
-		return;	/* more bytes to process in this segment */
 
 	if (!it->iter.bi_size) {
 		it->bio = it->bio->bi_next;
@@ -987,20 +982,11 @@ static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 					size_t bytes)
 {
 	struct bio_vec *bvecs = cursor->data->bvec_pos.bvecs;
-	struct page *page = bvec_iter_page(bvecs, cursor->bvec_iter);
 
 	BUG_ON(bytes > cursor->resid);
 	BUG_ON(bytes > bvec_iter_len(bvecs, cursor->bvec_iter));
 	cursor->resid -= bytes;
 	bvec_iter_advance(bvecs, &cursor->bvec_iter, bytes);
-
-	if (!cursor->resid) {
-		return;   /* no more data */
-	}
-
-	if (!bytes || (cursor->bvec_iter.bi_bvec_done &&
-		       page == bvec_iter_page(bvecs, cursor->bvec_iter)))
-		return;	/* more bytes to process in this segment */
 
 	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
 }
