@@ -218,7 +218,6 @@ struct ceph_msg_data_cursor {
 	struct bio_vec          tmp_bvec;       /* will be removed ASAP */
 	unsigned int            direction;      /* data direction */
 	size_t			resid;		/* bytes not yet consumed */
-	bool			last_piece;	/* current is last piece */
 	union {
 #ifdef CONFIG_BLOCK
 		struct ceph_bio_iter	bio_iter;

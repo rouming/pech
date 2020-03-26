@@ -908,7 +908,6 @@ static void ceph_msg_data_bio_cursor_init(struct ceph_msg_data_cursor *cursor,
 		it->iter.bi_size = cursor->resid;
 
 	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
-	cursor->last_piece = cursor->resid == bio_iter_len(it->bio, it->iter);
 }
 
 static struct page *ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor,
@@ -935,7 +934,6 @@ static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 	bio_advance_iter(it->bio, &it->iter, bytes);
 
 	if (!cursor->resid) {
-		BUG_ON(!cursor->last_piece);
 		return;   /* no more data */
 	}
 
@@ -950,9 +948,7 @@ static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 			it->iter.bi_size = cursor->resid;
 	}
 
-	BUG_ON(cursor->last_piece);
 	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
-	cursor->last_piece = cursor->resid == bio_iter_len(it->bio, it->iter);
 }
 #endif /* CONFIG_BLOCK */
 
@@ -967,8 +963,6 @@ static void ceph_msg_data_bvecs_cursor_init(struct ceph_msg_data_cursor *cursor,
 	cursor->bvec_iter.bi_size = cursor->resid;
 
 	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
-	cursor->last_piece =
-	    cursor->resid == bvec_iter_len(bvecs, cursor->bvec_iter);
 }
 
 static struct page *ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor,
@@ -995,7 +989,6 @@ static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 	bvec_iter_advance(bvecs, &cursor->bvec_iter, bytes);
 
 	if (!cursor->resid) {
-		BUG_ON(!cursor->last_piece);
 		return;   /* no more data */
 	}
 
@@ -1003,10 +996,7 @@ static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 		       page == bvec_iter_page(bvecs, cursor->bvec_iter)))
 		return;	/* more bytes to process in this segment */
 
-	BUG_ON(cursor->last_piece);
 	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
-	cursor->last_piece =
-	    cursor->resid == bvec_iter_len(bvecs, cursor->bvec_iter);
 }
 
 /*
@@ -1031,7 +1021,6 @@ static void ceph_msg_data_pages_cursor_init(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(page_count > (int)USHRT_MAX);
 	cursor->page_count = (unsigned short)page_count;
 	BUG_ON(length > SIZE_MAX - cursor->page_offset);
-	cursor->last_piece = cursor->page_offset + cursor->resid <= PAGE_SIZE;
 }
 
 static struct page *
@@ -1046,10 +1035,7 @@ ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(cursor->page_offset >= PAGE_SIZE);
 
 	*page_offset = cursor->page_offset;
-	if (cursor->last_piece)
-		*length = cursor->resid;
-	else
-		*length = PAGE_SIZE - *page_offset;
+	*length = min(PAGE_SIZE - *page_offset, cursor->resid);
 
 	return data->pages[cursor->page_index];
 }
@@ -1075,7 +1061,6 @@ static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
 
 	BUG_ON(cursor->page_index >= cursor->page_count);
 	cursor->page_index++;
-	cursor->last_piece = cursor->resid <= PAGE_SIZE;
 }
 
 /*
@@ -1104,7 +1089,6 @@ ceph_msg_data_pagelist_cursor_init(struct ceph_msg_data_cursor *cursor,
 	cursor->resid = min(length, pagelist->length);
 	cursor->page = page;
 	cursor->offset = 0;
-	cursor->last_piece = cursor->resid <= PAGE_SIZE;
 }
 
 static struct page *
@@ -1124,10 +1108,7 @@ ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor,
 
 	/* offset of first page in pagelist is always 0 */
 	*page_offset = cursor->offset & ~PAGE_MASK;
-	if (cursor->last_piece)
-		*length = cursor->resid;
-	else
-		*length = PAGE_SIZE - *page_offset;
+	*length = min(PAGE_SIZE - *page_offset, cursor->resid);
 
 	return cursor->page;
 }
@@ -1161,7 +1142,6 @@ static void ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
 
 	BUG_ON(list_is_last(&cursor->page->lru, &pagelist->head));
 	cursor->page = list_next_entry(cursor->page, lru);
-	cursor->last_piece = cursor->resid <= PAGE_SIZE;
 }
 
 /*
@@ -1278,7 +1258,6 @@ static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
 	cursor->total_resid -= bytes;
 
 	if (!cursor->resid && cursor->total_resid) {
-		WARN_ON(!cursor->last_piece);
 		cursor->data++;
 		__ceph_msg_data_cursor_init(cursor);
 	}
