@@ -614,48 +614,6 @@ static int ceph_tcp_recviov(struct socket *sock, struct iov_iter *iter)
 	return r;
 }
 
-__attribute__((unused))
-static int ceph_tcp_recvpage(struct socket *sock, struct page *page,
-		     int page_offset, size_t length)
-{
-	struct bio_vec bvec = {
-		.bv_page = page,
-		.bv_offset = page_offset,
-		.bv_len = length
-	};
-	struct kmsghdr msg = { .msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL };
-	int r;
-
-	BUG_ON(page_offset + length > PAGE_SIZE);
-	iov_iter_bvec(&msg.msg_iter, READ, &bvec, 1, length);
-	r = sock_recvmsg(sock, &msg, msg.msg_flags);
-	if (r == -EAGAIN)
-		r = 0;
-	return r;
-}
-
-/*
- * write something.  @more is true if caller will be sending more data
- * shortly.
- */
-__attribute__((unused))
-static int ceph_tcp_sendmsg(struct socket *sock, struct kvec *iov,
-			    size_t kvlen, size_t len, bool more)
-{
-	struct kmsghdr msg = { .msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL };
-	int r;
-
-	if (more)
-		msg.msg_flags |= MSG_MORE;
-	else
-		msg.msg_flags |= MSG_EOR;  /* superfluous, but what the hell */
-
-	r = kernel_sendmsg(sock, &msg, iov, kvlen, len);
-	if (r == -EAGAIN)
-		r = 0;
-	return r;
-}
-
 /*
  * write something.  @more is true if caller will be sending more data
  * shortly.
