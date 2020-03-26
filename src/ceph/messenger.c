@@ -638,6 +638,7 @@ static int ceph_tcp_recvpage(struct socket *sock, struct page *page,
  * write something.  @more is true if caller will be sending more data
  * shortly.
  */
+__attribute__((unused))
 static int ceph_tcp_sendmsg(struct socket *sock, struct kvec *iov,
 			    size_t kvlen, size_t len, bool more)
 {
@@ -1730,13 +1731,14 @@ static void prepare_write_banner(struct ceph_connection *con)
  */
 static int write_partial_kvec(struct ceph_connection *con)
 {
+	struct iov_iter it;
 	int ret;
 
 	dout("write_partial_kvec %p %d left\n", con, con->out_kvec_bytes);
 	while (con->out_kvec_bytes > 0) {
-		ret = ceph_tcp_sendmsg(con->sock, con->out_kvec_cur,
-				       con->out_kvec_left, con->out_kvec_bytes,
-				       con->out_more);
+		iov_iter_kvec(&it, WRITE, con->out_kvec_cur,
+			      con->out_kvec_left, con->out_kvec_bytes);
+		ret = ceph_tcp_sendiov(con->sock, &it, con->out_more);
 		if (ret <= 0)
 			goto out;
 		con->out_kvec_bytes -= ret;
