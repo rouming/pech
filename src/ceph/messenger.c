@@ -1225,11 +1225,9 @@ static void ceph_msg_data_cursor_init(struct ceph_msg *msg, size_t length)
 /*
  * Return the page containing the next piece to process for a given
  * data item, and supply the page offset and length of that piece.
- * Indicate whether this is the last piece in this data item.
  */
 static struct page *ceph_msg_data_next(struct ceph_msg_data_cursor *cursor,
-					size_t *page_offset, size_t *length,
-					bool *last_piece)
+					size_t *page_offset, size_t *length)
 {
 	struct page *page;
 
@@ -1258,8 +1256,6 @@ static struct page *ceph_msg_data_next(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(*page_offset + *length > PAGE_SIZE);
 	BUG_ON(!*length);
 	BUG_ON(*length > cursor->resid);
-	if (last_piece)
-		*last_piece = cursor->last_piece;
 
 	return page;
 }
@@ -1781,7 +1777,7 @@ static int write_partial_message_data(struct ceph_connection *con)
 			continue;
 		}
 
-		page = ceph_msg_data_next(cursor, &page_offset, &length, NULL);
+		page = ceph_msg_data_next(cursor, &page_offset, &length);
 		if (length == cursor->total_resid)
 			more = MSG_MORE;
 		ret = ceph_tcp_sendpage(con->sock, page, page_offset, length,
@@ -2672,7 +2668,7 @@ static int read_partial_msg_data(struct ceph_connection *con)
 			continue;
 		}
 
-		page = ceph_msg_data_next(cursor, &page_offset, &length, NULL);
+		page = ceph_msg_data_next(cursor, &page_offset, &length);
 		ret = ceph_tcp_recvpage(con->sock, page, page_offset, length);
 		if (ret <= 0) {
 			if (do_datacrc)
