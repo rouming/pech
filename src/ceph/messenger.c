@@ -889,6 +889,18 @@ static int con_out_kvec_skip(struct ceph_connection *con)
 	return skip;
 }
 
+static void ceph_msg_data_set_iter(struct ceph_msg_data_cursor *cursor,
+				   struct page *page, size_t offset,
+				   size_t length)
+{
+	cursor->tmp_bvec.bv_page = page;
+	cursor->tmp_bvec.bv_len = length;
+	cursor->tmp_bvec.bv_offset = offset;
+
+	iov_iter_bvec(&cursor->iter, cursor->direction,
+		      &cursor->tmp_bvec, 1, length);
+}
+
 #ifdef CONFIG_BLOCK
 
 /*
@@ -910,16 +922,13 @@ static void ceph_msg_data_bio_cursor_init(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
 }
 
-static struct page *ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor,
-						size_t *page_offset,
-						size_t *length)
+static void ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor)
 {
 	struct bio_vec bv = bio_iter_iovec(cursor->bio_iter.bio,
 					   cursor->bio_iter.iter);
 
-	*page_offset = bv.bv_offset;
-	*length = bv.bv_len;
-	return bv.bv_page;
+	ceph_msg_data_set_iter(cursor, bv.bv_page,
+			       bv.bv_offset, bv.bv_len);
 }
 
 static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
@@ -965,16 +974,13 @@ static void ceph_msg_data_bvecs_cursor_init(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
 }
 
-static struct page *ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor,
-						size_t *page_offset,
-						size_t *length)
+static void ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor)
 {
 	struct bio_vec bv = bvec_iter_bvec(cursor->data->bvec_pos.bvecs,
 					   cursor->bvec_iter);
 
-	*page_offset = bv.bv_offset;
-	*length = bv.bv_len;
-	return bv.bv_page;
+	ceph_msg_data_set_iter(cursor, bv.bv_page,
+			       bv.bv_offset, bv.bv_len);
 }
 
 static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
@@ -1023,9 +1029,7 @@ static void ceph_msg_data_pages_cursor_init(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(length > SIZE_MAX - cursor->page_offset);
 }
 
-static struct page *
-ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor,
-					size_t *page_offset, size_t *length)
+static void ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor)
 {
 	struct ceph_msg_data *data = cursor->data;
 
@@ -1034,10 +1038,10 @@ ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(cursor->page_index >= cursor->page_count);
 	BUG_ON(cursor->page_offset >= PAGE_SIZE);
 
-	*page_offset = cursor->page_offset;
-	*length = min(PAGE_SIZE - *page_offset, cursor->resid);
-
-	return data->pages[cursor->page_index];
+	ceph_msg_data_set_iter(cursor, data->pages[cursor->page_index],
+			       cursor->page_offset,
+			       min(PAGE_SIZE - cursor->page_offset,
+				   cursor->resid));
 }
 
 static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
@@ -1091,9 +1095,7 @@ ceph_msg_data_pagelist_cursor_init(struct ceph_msg_data_cursor *cursor,
 	cursor->offset = 0;
 }
 
-static struct page *
-ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor,
-				size_t *page_offset, size_t *length)
+static void ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor)
 {
 	struct ceph_msg_data *data = cursor->data;
 	struct ceph_pagelist *pagelist;
@@ -1106,11 +1108,10 @@ ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor,
 	BUG_ON(!cursor->page);
 	BUG_ON(cursor->offset + cursor->resid != pagelist->length);
 
-	/* offset of first page in pagelist is always 0 */
-	*page_offset = cursor->offset & ~PAGE_MASK;
-	*length = min(PAGE_SIZE - *page_offset, cursor->resid);
-
-	return cursor->page;
+	ceph_msg_data_set_iter(cursor, cursor->page,
+			       cursor->page_offset % ~PAGE_MASK,
+			       min(PAGE_SIZE - cursor->page_offset,
+				   cursor->resid));
 }
 
 static void ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
@@ -1194,41 +1195,26 @@ static void ceph_msg_data_cursor_init(unsigned int dir, struct ceph_msg *msg,
  */
 static void ceph_msg_data_next(struct ceph_msg_data_cursor *cursor)
 {
-	struct page *page;
-	size_t off, len;
-
 	switch (cursor->data->type) {
 	case CEPH_MSG_DATA_PAGELIST:
-		page = ceph_msg_data_pagelist_next(cursor, &off, &len);
+		ceph_msg_data_pagelist_next(cursor);
 		break;
 	case CEPH_MSG_DATA_PAGES:
-		page = ceph_msg_data_pages_next(cursor, &off, &len);
+		ceph_msg_data_pages_next(cursor);
 		break;
 #ifdef CONFIG_BLOCK
 	case CEPH_MSG_DATA_BIO:
-		page = ceph_msg_data_bio_next(cursor, &off, &len);
+		ceph_msg_data_bio_next(cursor);
 		break;
 #endif /* CONFIG_BLOCK */
 	case CEPH_MSG_DATA_BVECS:
-		page = ceph_msg_data_bvecs_next(cursor, &off, &len);
+		ceph_msg_data_bvecs_next(cursor);
 		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
-		page = NULL;
+		BUG();
 		break;
 	}
-
-	BUG_ON(!page);
-	BUG_ON(off + len > PAGE_SIZE);
-	BUG_ON(!len);
-	BUG_ON(len > cursor->resid);
-
-	cursor->tmp_bvec.bv_page = page;
-	cursor->tmp_bvec.bv_len = len;
-	cursor->tmp_bvec.bv_offset = off;
-
-	iov_iter_bvec(&cursor->iter, cursor->direction,
-		      &cursor->tmp_bvec, 1, len);
 }
 
 static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
