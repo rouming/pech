@@ -420,31 +420,63 @@ int kernel_getpeername(struct socket *sock, struct sockaddr *addr)
 	return sock->ops->getname(sock, addr, 1);
 }
 
-static struct iovec *iov_iter_to_iovec(struct iov_iter *iter,
-				       struct iovec *iovtmp)
+static unsigned int iov_iter_to_iovec(struct iov_iter *iter,
+				      struct iovec *iovs)
 {
-	struct iovec *iov;
+	size_t skip = iter->iov_offset;
+	size_t len, count = iter->count;
+	unsigned i = 0;
 
-	if (iov_iter_is_bvec(iter)) {
-		struct bvec_iter bi = {
-			.bi_bvec_done = iter->iov_offset,
-			.bi_size      = iter->count
-		};
-		struct bio_vec bv;
-		int i = 0;
+	/*
+	 * Unfortunately can't use iov_iter_for_each_range() for
+	 * bvec, because it iterates over pages, but for the sake
+	 * of the performance in case of multi-pages bvec we want
+	 * to grab the whole contiguous bvec, not only 1 page.
+	 * Not a big deal, just do the whole conversion ourselves.
+	 */
 
-		for_each_bvec(bv, iter->bvec, bi, bi) {
-			struct iovec *iovp = &iovtmp[i++];
-			iovp->iov_base = page_address(bv.bv_page) +
-				bv.bv_offset;
-			iovp->iov_len = bv.bv_len;
+	if (iter_is_iovec(iter)) {
+		for (i = 0; count && i < iter->nr_segs; i++) {
+			const struct iovec *src = &iter->iov[i];
+			struct iovec *dst = &iovs[i];
+
+			len = min(src->iov_len - skip, count);
+			dst->iov_base = src->iov_base + skip;
+			dst->iov_len = len;
+			count -= len;
+			skip = 0;
 		}
-		iov = iovtmp;
+	} else if (iov_iter_is_kvec(iter)) {
+		for (i = 0; count && i < iter->nr_segs; i++) {
+			const struct kvec *src = &iter->kvec[i];
+			struct iovec *dst = &iovs[i];
+
+			len = min(src->iov_len - skip, count);
+			dst->iov_base = src->iov_base + skip;
+			dst->iov_len = len;
+			count -= len;
+			skip = 0;
+		}
+	} else if (iov_iter_is_bvec(iter)) {
+		for (i = 0; i < count && iter->nr_segs; i++) {
+			const struct bio_vec *src = &iter->bvec[i];
+			struct iovec *dst = &iovs[i];
+
+			BUG_ON(skip >= src->bv_len);
+
+			len = min(src->bv_len - skip, count);
+			dst->iov_base = page_address(src->bv_page) +
+				src->bv_offset + skip;
+			dst->iov_len = len;
+			count -= len;
+			skip = 0;
+		}
 	} else {
-		iov = (struct iovec *)iter->iov;
+		BUG();
 	}
 
-	return iov;
+	return i;
+
 }
 
 /**
@@ -458,19 +490,19 @@ static struct iovec *iov_iter_to_iovec(struct iov_iter *iter,
  */
 int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
 {
+	struct iov_iter *iter = &kmsg->msg_iter;
+	struct iovec iov[iter->nr_segs];
 	struct msghdr msg = {
 		.msg_name    = kmsg->msg_name,
 		.msg_namelen = kmsg->msg_namelen,
-		.msg_iovlen  = kmsg->msg_iter.nr_segs,
+		.msg_iov     = iov,
 		.msg_control = kmsg->msg_control,
 		.msg_controllen = kmsg->msg_controllen,
 		.msg_flags    = kmsg->msg_flags
 	};
-	struct iov_iter *iter = &kmsg->msg_iter;
-	struct iovec iovtmp[iter->nr_segs];
 	int ret;
 
-	msg.msg_iov = iov_iter_to_iovec(iter, iovtmp);
+	msg.msg_iovlen = iov_iter_to_iovec(iter, iov);
 
 	ret = recvmsg(sock->fd, &msg, flags);
 	if (unlikely(ret < 0)) {
@@ -499,19 +531,19 @@ int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
  */
 int sock_sendmsg(struct socket *sock, struct kmsghdr *kmsg)
 {
+	struct iov_iter *iter = &kmsg->msg_iter;
+	struct iovec iov[iter->nr_segs];
 	struct msghdr msg = {
 		.msg_name    = kmsg->msg_name,
 		.msg_namelen = kmsg->msg_namelen,
-		.msg_iovlen  = kmsg->msg_iter.nr_segs,
+		.msg_iov     = iov,
 		.msg_control = kmsg->msg_control,
 		.msg_controllen = kmsg->msg_controllen,
 		.msg_flags    = kmsg->msg_flags
 	};
-	struct iov_iter *iter = &kmsg->msg_iter;
-	struct iovec iovtmp[iter->nr_segs];
 	int ret;
 
-	msg.msg_iov = iov_iter_to_iovec(iter, iovtmp);
+	msg.msg_iovlen = iov_iter_to_iovec(iter, iov);
 
 	ret = sendmsg(sock->fd, &msg, 0);
 	if (unlikely(ret < 0)) {
