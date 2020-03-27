@@ -960,35 +960,42 @@ static void ceph_msg_data_bvecs_cursor_init(struct ceph_msg_data_cursor *cursor,
 					size_t length)
 {
 	struct ceph_msg_data *data = cursor->data;
-	struct bio_vec *bvecs = data->bvec_pos.bvecs;
 
 	cursor->resid = min_t(size_t, length, data->bvec_pos.iter.bi_size);
-	cursor->bvec_iter = data->bvec_pos.iter;
-	cursor->bvec_iter.bi_size = cursor->resid;
 
-	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
+	iov_iter_bvec(&cursor->iter, cursor->direction, data->bvec_pos.bvecs,
+		      data->num_bvecs, cursor->resid);
 }
 
 static void ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor)
 {
-	struct bio_vec bv = bvec_iter_bvec(cursor->data->bvec_pos.bvecs,
-					   cursor->bvec_iter);
+	/* Nothing here */
+}
 
-	ceph_msg_data_set_iter(cursor, bv.bv_page,
-			       bv.bv_offset, bv.bv_len);
+static void ceph_msg_data_iov_iter_advance(struct ceph_msg_data_cursor *cursor,
+					   size_t bytes)
+{
+	size_t iter_size = iov_iter_count(&cursor->iter);
+
+	cursor->resid -= bytes;
+
+	if (WARN_ON(iter_size < cursor->resid))
+		/* Two counters are out of sync, should not happen */
+		return;
+
+	if (iter_size > cursor->resid)
+		/*
+		 * Advance iter only if it was not advanced before.
+		 * That can happen if iov_iter API was called, e.g.
+		 * copy_from_iter() and co.
+		 */
+		iov_iter_advance(&cursor->iter, bytes);
 }
 
 static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 					size_t bytes)
 {
-	struct bio_vec *bvecs = cursor->data->bvec_pos.bvecs;
-
-	BUG_ON(bytes > cursor->resid);
-	BUG_ON(bytes > bvec_iter_len(bvecs, cursor->bvec_iter));
-	cursor->resid -= bytes;
-	bvec_iter_advance(bvecs, &cursor->bvec_iter, bytes);
-
-	BUG_ON(cursor->resid < bvec_iter_len(bvecs, cursor->bvec_iter));
+	ceph_msg_data_iov_iter_advance(cursor, bytes);
 }
 
 /*
