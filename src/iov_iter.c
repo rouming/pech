@@ -154,6 +154,19 @@ void iov_iter_bvec(struct iov_iter *i, unsigned int direction,
 	i->count = count;
 }
 
+void iov_iter_advance(struct iov_iter *i, size_t size)
+{
+	if (unlikely(iov_iter_is_pipe(i))) {
+		BUG();
+		return;
+	}
+	if (unlikely(iov_iter_is_discard(i))) {
+		i->count -= size;
+		return;
+	}
+	iterate_and_advance(i, size, v, 0, 0, 0)
+}
+
 int iov_iter_for_each_range(struct iov_iter *i, size_t bytes,
 			    int (*f)(struct kvec *vec, void *context),
 			    void *context)
