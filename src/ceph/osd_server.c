@@ -744,14 +744,15 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 		dst_len -= len;
 		dst_off += len;
 		modified = true;
+	}
+out:
+	if (modified) {
+		obj->o_mtime = req->mtime;
 
 		/* Extend object size if needed */
 		if (dst_off > obj->o_size)
 			obj->o_size = dst_off;
 	}
-out:
-	if (modified)
-		obj->o_mtime = req->mtime;
 
 	return ret;
 }
