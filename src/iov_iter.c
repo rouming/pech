@@ -130,6 +130,15 @@
 	}							\
 }
 
+static int copyin(void *to, const void __user *from, size_t n)
+{
+	if (access_ok(from, n)) {
+		kasan_check_write(to, n);
+		n = raw_copy_from_user(to, from, n);
+	}
+	return n;
+}
+
 void iov_iter_kvec(struct iov_iter *i, unsigned int direction,
 			const struct kvec *kvec, unsigned long nr_segs,
 			size_t count)
@@ -186,4 +195,29 @@ int iov_iter_for_each_range(struct iov_iter *i, size_t bytes,
 		err = f(&w, context);})
 	)
 	return err;
+}
+
+static void memcpy_from_page(char *to, struct page *page,
+			     size_t offset, size_t len)
+{
+	memcpy(to, page_address(page) + offset, len);
+}
+
+size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+{
+	char *to = addr;
+	if (unlikely(iov_iter_is_pipe(i))) {
+		WARN_ON(1);
+		return 0;
+	}
+	if (iter_is_iovec(i))
+		might_fault();
+	iterate_and_advance(i, bytes, v,
+		copyin((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len),
+		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
+				 v.bv_offset, v.bv_len),
+		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+	)
+
+	return bytes;
 }
