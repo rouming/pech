@@ -439,6 +439,13 @@ void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
 			     struct ceph_bvec_iter *bvec_pos,
 			     unsigned int num_bvec, bool own_bvec);
 
+void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
+			       struct ceph_msg_data *data,
+			       unsigned int dir, size_t length);
+void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor);
+void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
+				  size_t bytes);
+
 struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
 			       gfp_t flags, bool can_fail);
 extern struct ceph_msg *ceph_msg_new(int type, int front_len, gfp_t flags,

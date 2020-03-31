@@ -1167,8 +1167,21 @@ static void __ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor)
 	}
 }
 
-static void ceph_msg_data_cursor_init(unsigned int dir, struct ceph_msg *msg,
-				      size_t length)
+void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
+			       struct ceph_msg_data *data,
+			       unsigned int dir, size_t length)
+{
+	cursor->total_resid = length;
+	cursor->data = data;
+	cursor->direction = dir;
+
+	if (length)
+		__ceph_msg_data_cursor_init(cursor);
+}
+EXPORT_SYMBOL(ceph_msg_data_cursor_init);
+
+static void ceph_msg_cursor_init(unsigned int dir, struct ceph_msg *msg,
+				 size_t length)
 {
 	struct ceph_msg_data_cursor *cursor = &msg->cursor;
 
@@ -1176,17 +1189,13 @@ static void ceph_msg_data_cursor_init(unsigned int dir, struct ceph_msg *msg,
 	BUG_ON(length > msg->data_length);
 	BUG_ON(!msg->num_data_items);
 
-	cursor->total_resid = length;
-	cursor->data = msg->data;
-	cursor->direction = dir;
-
-	__ceph_msg_data_cursor_init(cursor);
+	ceph_msg_data_cursor_init(cursor, msg->data, dir, length);
 }
 
 /*
  * Setups cursor->iter for the next piece to process.
  */
-static void ceph_msg_data_next(struct ceph_msg_data_cursor *cursor)
+void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor)
 {
 	switch (cursor->data->type) {
 	case CEPH_MSG_DATA_PAGELIST:
@@ -1209,8 +1218,9 @@ static void ceph_msg_data_next(struct ceph_msg_data_cursor *cursor)
 		break;
 	}
 }
+EXPORT_SYMBOL(ceph_msg_data_cursor_next);
 
-static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
+void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 				  size_t bytes)
 {
 	BUG_ON(bytes > cursor->resid);
@@ -1241,6 +1251,7 @@ static void ceph_msg_data_advance(struct ceph_msg_data_cursor *cursor,
 		__ceph_msg_data_cursor_init(cursor);
 	}
 }
+EXPORT_SYMBOL(ceph_msg_data_cursor_advance);
 
 static size_t sizeof_footer(struct ceph_connection *con)
 {
@@ -1254,7 +1265,7 @@ static void prepare_message_data(unsigned int dir, struct ceph_msg *msg,
 {
 	/* Initialize data cursor */
 
-	ceph_msg_data_cursor_init(dir, msg, (size_t)data_len);
+	ceph_msg_cursor_init(dir, msg, (size_t)data_len);
 }
 
 /*
@@ -1716,11 +1727,11 @@ static int write_partial_message_data(struct ceph_connection *con)
 		int ret;
 
 		if (!cursor->resid) {
-			ceph_msg_data_advance(cursor, 0);
+			ceph_msg_data_cursor_advance(cursor, 0);
 			continue;
 		}
 
-		ceph_msg_data_next(cursor);
+		ceph_msg_data_cursor_next(cursor);
 		if (iov_iter_count(&cursor->iter) == cursor->total_resid)
 			more = MSG_MORE;
 		ret = ceph_tcp_sendiov(con->sock, &cursor->iter, more);
@@ -1732,7 +1743,7 @@ static int write_partial_message_data(struct ceph_connection *con)
 		}
 		if (do_datacrc)
 			crc = ceph_crc32c_iov(crc, &cursor->iter, ret);
-		ceph_msg_data_advance(cursor, (size_t)ret);
+		ceph_msg_data_cursor_advance(cursor, (size_t)ret);
 	}
 
 	dout("%s %p msg %p done\n", __func__, con, msg);
@@ -2603,11 +2614,11 @@ static int read_partial_msg_data(struct ceph_connection *con)
 		crc = con->in_data_crc;
 	while (cursor->total_resid) {
 		if (!cursor->resid) {
-			ceph_msg_data_advance(cursor, 0);
+			ceph_msg_data_cursor_advance(cursor, 0);
 			continue;
 		}
 
-		ceph_msg_data_next(cursor);
+		ceph_msg_data_cursor_next(cursor);
 		ret = ceph_tcp_recviov(con->sock, &cursor->iter);
 		if (ret <= 0) {
 			if (do_datacrc)
@@ -2618,7 +2629,7 @@ static int read_partial_msg_data(struct ceph_connection *con)
 
 		if (do_datacrc)
 			crc = ceph_crc32c_iov(crc, &cursor->iter, ret);
-		ceph_msg_data_advance(cursor, (size_t)ret);
+		ceph_msg_data_cursor_advance(cursor, (size_t)ret);
 	}
 	if (do_datacrc)
 		con->in_data_crc = crc;
