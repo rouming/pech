@@ -998,6 +998,28 @@ static void ceph_msg_data_bvecs_advance(struct ceph_msg_data_cursor *cursor,
 	ceph_msg_data_iov_iter_advance(cursor, bytes);
 }
 
+static void ceph_msg_data_kvec_cursor_init(struct ceph_msg_data_cursor *cursor,
+					   size_t length)
+{
+	struct ceph_msg_data *data = cursor->data;
+
+	cursor->resid = min_t(size_t, length, data->kvec->length);
+
+	iov_iter_kvec(&cursor->iter, cursor->direction, data->kvec->kvec,
+		      data->kvec->nr_segs, cursor->resid);
+}
+
+static void ceph_msg_data_kvec_next(struct ceph_msg_data_cursor *cursor)
+{
+	/* Nothing here */
+}
+
+static void ceph_msg_data_kvec_advance(struct ceph_msg_data_cursor *cursor,
+				       size_t bytes)
+{
+	ceph_msg_data_iov_iter_advance(cursor, bytes);
+}
+
 /*
  * For a page array, a piece comes from the first page in the array
  * that has not already been fully consumed.
@@ -1160,6 +1182,9 @@ static void __ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor)
 	case CEPH_MSG_DATA_BVECS:
 		ceph_msg_data_bvecs_cursor_init(cursor, length);
 		break;
+	case CEPH_MSG_DATA_KVEC:
+		ceph_msg_data_kvec_cursor_init(cursor, length);
+		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
 		/* BUG(); */
@@ -1212,6 +1237,9 @@ void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor)
 	case CEPH_MSG_DATA_BVECS:
 		ceph_msg_data_bvecs_next(cursor);
 		break;
+	case CEPH_MSG_DATA_KVEC:
+		ceph_msg_data_kvec_next(cursor);
+		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
 		BUG();
@@ -1238,6 +1266,9 @@ void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 #endif /* CONFIG_BLOCK */
 	case CEPH_MSG_DATA_BVECS:
 		ceph_msg_data_bvecs_advance(cursor, bytes);
+		break;
+	case CEPH_MSG_DATA_KVEC:
+		ceph_msg_data_kvec_advance(cursor, bytes);
 		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
@@ -3820,6 +3851,11 @@ static void ceph_bvecs_release(struct ceph_bvec_iter *bvec_pos,
 	bvec_pos->bvecs = NULL;
 }
 
+static void ceph_kvec_release(struct ceph_kvec *kvec)
+{
+	kvec->release(kvec);
+}
+
 void ceph_msg_data_init(struct ceph_msg_data *data)
 {
 	memset(data, 0, sizeof (*data));
@@ -3836,6 +3872,8 @@ void ceph_msg_data_release(struct ceph_msg_data *data)
 		ceph_pagelist_release(data->pagelist);
 	} else if (data->type == CEPH_MSG_DATA_BVECS && data->own_bvecs) {
 		ceph_bvecs_release(&data->bvec_pos, data->num_bvecs);
+	} else if (data->type == CEPH_MSG_DATA_KVEC) {
+		ceph_kvec_release(data->kvec);
 	}
 	ceph_msg_data_init(data);
 }
@@ -3891,6 +3929,14 @@ void ceph_msg_data_bvecs_init(struct ceph_msg_data *data,
 }
 EXPORT_SYMBOL(ceph_msg_data_bvecs_init);
 
+void ceph_msg_data_kvec_init(struct ceph_msg_data *data,
+			     struct ceph_kvec *kvec)
+{
+	data->type = CEPH_MSG_DATA_KVEC;
+	data->kvec = kvec;
+}
+EXPORT_SYMBOL(ceph_msg_data_kvec_init);
+
 size_t ceph_msg_data_length(struct ceph_msg_data *data)
 {
 	switch (data->type) {
@@ -3906,6 +3952,8 @@ size_t ceph_msg_data_length(struct ceph_msg_data *data)
 #endif /* CONFIG_BLOCK */
 	case CEPH_MSG_DATA_BVECS:
 		return data->bvec_pos.iter.bi_size;
+	case CEPH_MSG_DATA_KVEC:
+		return data->kvec->length;
 	default:
 		WARN(true, "unrecognized data type %d\n", (int)data->type);
 		return 0;

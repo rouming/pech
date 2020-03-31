@@ -101,6 +101,7 @@ enum ceph_msg_data_type {
 	CEPH_MSG_DATA_BIO,	/* data source/destination is a bio list */
 #endif /* CONFIG_BLOCK */
 	CEPH_MSG_DATA_BVECS,	/* data source/destination is a bio_vec array */
+	CEPH_MSG_DATA_KVEC,     /* data src/dst is a kvec with release func */
 };
 
 #ifdef CONFIG_BLOCK
@@ -152,6 +153,13 @@ struct ceph_bio_iter {
 struct ceph_bvec_iter {
 	struct bio_vec *bvecs;
 	struct bvec_iter iter;
+};
+
+struct ceph_kvec {
+	struct kvec   *kvec;
+	void (*release)(struct ceph_kvec *);
+	unsigned long length;
+	unsigned long nr_segs;
 };
 
 #define __ceph_bvec_iter_advance_step(it, n, STEP) do {			      \
@@ -207,6 +215,7 @@ struct ceph_msg_data {
 			bool		own_pages;
 		};
 		struct ceph_pagelist	*pagelist;
+		struct ceph_kvec        *kvec;
 	};
 };
 
@@ -424,6 +433,8 @@ void ceph_msg_data_bio_init(struct ceph_msg_data *data,
 void ceph_msg_data_bvecs_init(struct ceph_msg_data *data,
 			      struct ceph_bvec_iter *bvec_pos,
 			      u32 num_bvecs, bool own_bvecs);
+void ceph_msg_data_kvec_init(struct ceph_msg_data *data,
+			     struct ceph_kvec *kvec);
 void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *data);
 
 void ceph_msg_data_add_pages(struct ceph_msg *msg, struct page **pages,
