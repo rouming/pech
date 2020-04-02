@@ -44,6 +44,8 @@ struct ceph_msg_osd_op {
 	unsigned int           num_snaps;
 	u64                    snap_seq;
 	u64                    *snaps;
+	struct ceph_osds_object
+			       *object; /* cached object for OP_CALL */
 };
 
 struct ceph_osds_con {
@@ -120,6 +122,16 @@ DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
  * Define RB functions for object block lookup by offset
  */
 DEFINE_RB_FUNCS(object_block_by_off, struct ceph_osds_block, b_off, b_node);
+
+static struct ceph_osds_object *
+ceph_lookup_object(struct ceph_osd_server *osds,
+		   struct ceph_msg_osd_op *req)
+{
+	if (!req->object)
+		req->object = lookup_object_by_hoid(&osds->s_objects,
+						    &req->hoid);
+	return req->object;
+}
 
 static int osds_accept_con(struct ceph_connection *con)
 {
@@ -383,6 +395,7 @@ static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 	ceph_hoid_init(&req->hoid);
 	memset(&req->ops, 0, sizeof(req->ops));
 	req->snaps = NULL;
+	req->object = NULL;
 }
 
 static void deinit_msg_osd_op(struct ceph_msg_osd_op *req)
@@ -699,9 +712,9 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 		return 0;
 
 	/*
-	 * Find or create an object by hoid
+	 * Find or create an object
 	 */
-	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	obj = ceph_lookup_object(osds, req);
 	if (!obj) {
 		obj = kmalloc(sizeof(*obj), GFP_KERNEL);
 		if (!obj)
@@ -803,10 +816,8 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 
 	struct ceph_bvec_iter it;
 
-	/*
-	 * Find an object by hoid
-	 */
-	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	/* Find an object */
+	obj = ceph_lookup_object(osds, req);
 	if (!obj)
 		return -ENOENT;
 
@@ -894,10 +905,8 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 	void *p;
 	int ret;
 
-	/*
-	 * Find an object by hoid
-	 */
-	obj = lookup_object_by_hoid(&osds->s_objects, &req->hoid);
+	/* Find an object */
+	obj = ceph_lookup_object(osds, req);
 	if (!obj)
 		return -ENOENT;
 
