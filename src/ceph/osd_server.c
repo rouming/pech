@@ -133,6 +133,29 @@ ceph_lookup_object(struct ceph_osd_server *osds,
 	return req->object;
 }
 
+static struct ceph_osds_object *
+ceph_create_and_insert_object(struct ceph_osd_server *osds,
+			      struct ceph_msg_osd_op *req)
+{
+	struct ceph_osds_object *obj;
+
+	obj = kmalloc(sizeof(*obj), GFP_KERNEL);
+	if (!obj)
+		return NULL;
+
+	obj->o_size = 0;
+	obj->o_blocks = RB_ROOT;
+	RB_CLEAR_NODE(&obj->o_node);
+	ceph_hoid_init(&obj->o_hoid);
+	ceph_hoid_copy(&obj->o_hoid, &req->hoid);
+	insert_object_by_hoid(&osds->s_objects, obj);
+
+	/* Cache an object */
+	req->object = obj;
+
+	return obj;
+}
+
 static int osds_accept_con(struct ceph_connection *con)
 {
 	pr_err("@@ con %p\n", con);
@@ -716,16 +739,9 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	 */
 	obj = ceph_lookup_object(osds, req);
 	if (!obj) {
-		obj = kmalloc(sizeof(*obj), GFP_KERNEL);
+		obj = ceph_create_and_insert_object(osds, req);
 		if (!obj)
 			return -ENOMEM;
-
-		obj->o_size = 0;
-		obj->o_blocks = RB_ROOT;
-		RB_CLEAR_NODE(&obj->o_node);
-		ceph_hoid_init(&obj->o_hoid);
-		ceph_hoid_copy(&obj->o_hoid, &req->hoid);
-		insert_object_by_hoid(&osds->s_objects, obj);
 	}
 
 	/*
