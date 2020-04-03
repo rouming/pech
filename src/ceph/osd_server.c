@@ -776,11 +776,14 @@ out:
 	return ret;
 }
 
-static struct ceph_osds_block *lookup_right_block(struct rb_root *root,
-						  off_t off)
+/**
+ * lookup_block_ge() - returns block which offset equal or greater than @off
+ */
+static struct ceph_osds_block *lookup_block_ge(struct ceph_osds_object *obj,
+					       off_t off)
 {
+	struct rb_node *n = obj->o_blocks.rb_node;
 	struct ceph_osds_block *right = NULL;
-	struct rb_node *n = root->rb_node;
 	int cmp = 0;
 
 	while (n) {
@@ -842,9 +845,9 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	off_inpg = 0;
 	off = op->extent.offset;
 	blk_off = ALIGN_DOWN(off, OSDS_BLOCK_SIZE);
-	blk = lookup_right_block(&obj->o_blocks, blk_off);
+	blk = lookup_block_ge(obj, blk_off);
 	while (blk && len_read) {
-		/* Found block is exactly we were looking for or to the right */
+		/* Found block is exactly we were looking for or the next one */
 		BUG_ON(blk->b_off < blk_off);
 
 		/* Zero out a possible hole before block */
