@@ -1771,7 +1771,8 @@ static int decode_hoid(void **p, void *end, struct ceph_hobject_id *hoid)
 	ceph_decode_32_safe(p, end, strlen, e_inval);
 	if (strlen) {
 		ceph_decode_need(p, end, strlen, e_inval);
-		ret = ceph_oid_aprintf(&hoid->oid, GFP_NOIO, "%s", *p);
+		ret = ceph_oid_aprintf(&hoid->oid, GFP_NOIO,
+				       "%.*s", strlen, *p);
 		*p += strlen;
 		if (ret)
 			goto e_inval;

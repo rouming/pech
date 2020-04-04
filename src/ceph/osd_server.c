@@ -565,7 +565,8 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	ceph_decode_32_safe(&p, end, strlen, bad);
 	ceph_decode_need(&p, end, strlen, bad);
-	ret = ceph_oid_aprintf(&req->hoid.oid, GFP_KERNEL, "%s", p);
+	ret = ceph_oid_aprintf(&req->hoid.oid, GFP_KERNEL,
+			       "%.*s", strlen, p);
 	p += strlen;
 	if (ret)
 		goto err;
