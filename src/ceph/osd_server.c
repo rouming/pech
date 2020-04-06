@@ -325,8 +325,8 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			cpu_to_le32(src->copy_from.src_fadvise_flags);
 		break;
 	default:
-		pr_err("unsupported osd opcode %s\n",
-			ceph_osd_op_name(src->op));
+		pr_err("%s: unsupported osd opcode 0x%x '%s'\n", __func__,
+		       src->op, ceph_osd_op_name(src->op));
 		WARN_ON(1);
 
 		return 0;
@@ -582,8 +582,8 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->copy_from.osd_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	default:
-		pr_err("unsupported osd opcode %s\n",
-			ceph_osd_op_name(dst->op));
+		pr_err("%s: unsupported osd opcode 0x%x '%s'\n", __func__,
+		       dst->op, ceph_osd_op_name(dst->op));
 		WARN_ON(1);
 
 		return -EINVAL;
@@ -1108,8 +1108,8 @@ static int osd_op_to_req_op(const struct ceph_osd_op *src,
 	case CEPH_OSD_OP_OMAPGETKEYS:
 		break;
 	default:
-		pr_err("unsupported osd opcode %s\n",
-			ceph_osd_op_name(dst->op));
+		pr_err("%s: unsupported osd opcode 0x%x: %s\n", __func__,
+		       dst->op, ceph_osd_op_name(dst->op));
 		WARN_ON(1);
 
 		return -EINVAL;
@@ -1821,8 +1821,8 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		ret = handle_osd_op_create(msg, req, op);
 		break;
 	default:
-		pr_err("%s: unknown op type 0x%x\n",
-		       __func__, op->op);
+		pr_err("%s: unknown op type 0x%x '%s'\n", __func__,
+		       op->op, ceph_osd_op_name(op->op));
 		ret = -EOPNOTSUPP;
 		break;
 	}
@@ -1945,8 +1945,8 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_OSD_OPREPLY:
 		/* fall through */
 	default:
-		pr_warn("%s unknown msg type %d, skipping\n", __func__,
-			type);
+		pr_warn("%s unknown msg type %d '%s', skipping\n", __func__,
+			type, ceph_msg_type_name(type));
 		*skip = 1;
 		return NULL;
 	}
