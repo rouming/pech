@@ -18,17 +18,43 @@ In future number of event loops can be equal to a number of physical
 CPUs, where each event loop is executed from a dedicated pthread
 context and pinned to a particular CPU.
 
-What this noop OSD does?
+What Pech OSD does?
 
   o Connects to monitors and "boots" OSD, i.e. marks it as UP.
   o On Ctrl+C marks OSD on monitors as DOWN and gracefully exits.
   o OSD operations supported in memory:
 
      - OP_WRITE
+     - OP_WRITEFULL
      - OP_READ
+     - OP_SYNC_READ
      - OP_STAT
+     - OP_CALL
+     - OP_OMAPGETVALS
+     - OP_OMAPGETVALSBYKEYS
+     - OP_OMAPSETVALS
+     - OP_OMAPGETKEYS
+     - OP_GETXATTR
+     - OP_SETXATTR
+     - OP_CREATE
 
   So simple fio/examples/rados.fio load can be run.
+
+  For RBD images (e.g. fio/examples/rbd.fio) OSD class directory should
+  be specified, i.e. where is your upstream Ceph built is located:
+  `class_dir=$CEPH/build/lib`.
+
+  The thing is that RBD images require loading of OSD object classes,
+  which are shared objects and loaded by the OSD on OP_CALL request.
+  The original Ceph OSD object classes can't be simply loaded from
+  Pech, because it is written on C and does not provide any C++
+  interfaces or Ceph common libraries, like for example bufferlist.
+  In order to provide missing C++ classes and C++ interface we need a
+  proxy library, which acts as a bridge between Pech OSD and OSD
+  object classes.  The Pech proxy library can be found here [2], so
+  `make ceph_pech_proxy` should be called in order to build it. When
+  everything is built and `class_dir` is specified rbd.fio load should
+  work just fine.
 
 What is not yet ported from kernel sources?
 
@@ -57,7 +83,8 @@ Make:
 Start new Ceph cluster with 1 OSD and then stop everything.  We start
 monitors on specified port, proto v1 and with -X option, i.e. auth=none.
 
-  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=1 MGR=0 ../src/vstart.sh --memstore -n -X --msgr1
+  $ CEPH_PORT=50000 MON=1 MDS=0 OSD=1 MGR=0 ../src/vstart.sh --memstore \
+    -n -X --msgr1
   $ ../src/stop.sh
 
 Restart only Ceph monitor(s):
@@ -66,7 +93,14 @@ Restart only Ceph monitor(s):
 
 Start pech-osd accessing monitor over v1 protocol:
 
-  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` log_level=5
+  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` \
+    log_level=5
+
+For the case when RBD images are required Pech proxy should be built
+and `class_dir` should be specified:
+
+  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` \
+    class_dir=$CEPH/build/lib log_level=5
 
 For DEBUG purposes maximum output log level can be specified: log_level=7
 
@@ -76,3 +110,4 @@ Have fun!
 Roman
 
 [1] https://lists.ceph.io/hyperkitty/list/dev@ceph.io/thread/N46NR7NBHWBQL4B2ASU7Y2LMKZZPK3IX/
+[2] https://github.com/rouming/ceph/tree/pech-osd
