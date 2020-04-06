@@ -273,6 +273,7 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 	case CEPH_OSD_OP_STAT:
 		break;
 	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_SYNC_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -524,6 +525,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->raw_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_SYNC_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -1056,6 +1058,7 @@ static int osd_op_to_req_op(const struct ceph_osd_op *src,
 		dst->raw_data.type = CEPH_MSG_DATA_NONE;
 		break;
 	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_SYNC_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -1950,6 +1953,7 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		ret = handle_osd_op_write(msg, req, op, in_cur);
 		break;
 	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_SYNC_READ:
 		ret = handle_osd_op_read(msg, req, op);
 		break;
 	case CEPH_OSD_OP_STAT:
