@@ -1999,6 +1999,16 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 	case CEPH_OSD_OP_CREATE:
 		ret = handle_osd_op_create(msg, req, op);
 		break;
+	case CEPH_OSD_OP_WATCH:
+	case CEPH_OSD_OP_LIST_WATCHERS:
+	case CEPH_OSD_OP_SETALLOCHINT:
+		/* FIXME: pretend we support these commands */
+		ret = 0;
+		break;
+	case CEPH_OSD_OP_NOTIFY:
+		/* Without that `fio examples/rbd.fio` hangs on exit */
+		ret = -EOPNOTSUPP;
+		break;
 	default:
 		pr_err("%s: unknown op type 0x%x '%s'\n", __func__,
 		       op->op, ceph_osd_op_name(op->op));
