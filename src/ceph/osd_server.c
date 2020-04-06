@@ -426,8 +426,10 @@ create_osd_op_reply(struct ceph_msg_osd_op *req,
 		data_len += osd_req_encode_op(raw_op, op);
 		p += sizeof(struct ceph_osd_op);
 
-		if (op->outdata)
+		if (op->outdata) {
+			BUG_ON(!op->outdata_len);
 			ceph_msg_data_add(msg, op->outdata);
+		}
 	}
 	msg->hdr.data_len = cpu_to_le32(data_len);
 
