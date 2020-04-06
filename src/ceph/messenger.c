@@ -1284,6 +1284,33 @@ void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 }
 EXPORT_SYMBOL(ceph_msg_data_cursor_advance);
 
+int ceph_msg_data_cursor_copy(struct ceph_msg_data_cursor *cursor,
+			      void *buf, size_t length)
+{
+	off_t off = 0;
+
+	if (cursor->total_resid < length)
+		return -EINVAL;
+
+	while (length) {
+		size_t len, len2;
+
+		ceph_msg_data_cursor_next(cursor);
+
+		len = iov_iter_count(&cursor->iter);
+		len = min(len, length);
+		len2 = copy_from_iter(buf + off, len, &cursor->iter);
+		WARN_ON(len2 != len);
+
+		ceph_msg_data_cursor_advance(cursor, len);
+		off += len;
+		length -= len;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(ceph_msg_data_cursor_copy);
+
 static size_t sizeof_footer(struct ceph_connection *con)
 {
 	return (con->peer_features & CEPH_FEATURE_MSG_AUTH) ?

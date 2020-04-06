@@ -456,6 +456,65 @@ void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
 void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor);
 void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 				  size_t bytes);
+int ceph_msg_data_cursor_copy(struct ceph_msg_data_cursor *cursor,
+			      void *buf, size_t length);
+
+static inline int
+ceph_msg_data_cursor_decode_8(struct ceph_msg_data_cursor *cursor, u8 *v)
+{
+	return ceph_msg_data_cursor_copy(cursor, v, sizeof(*v));
+}
+
+#define define_cursor_decode(bits)					\
+static inline int ceph_msg_data_cursor_decode_ ##bits(			\
+	struct ceph_msg_data_cursor *cur, u ##bits *v)			\
+{									\
+	__le##bits ev;							\
+	int ret = ceph_msg_data_cursor_copy(cur, &ev, sizeof(ev));	\
+	if (!ret)							\
+		*v = le ## bits ## _to_cpu(ev);				\
+	return ret;							\
+}
+
+define_cursor_decode(16)
+define_cursor_decode(32)
+define_cursor_decode(64)
+
+#define cursor_decode_safe(bits, cur, label) ({				\
+	u ##bits v;							\
+	int ret = ceph_msg_data_cursor_decode_ ##bits(cur, &v);		\
+	if (ret)							\
+		goto label;						\
+	v;								\
+})
+
+#define cursor_decode_safe_copy(cur, buf, sz, label) ({			\
+	int ret = ceph_msg_data_cursor_copy(cur, buf, sz);		\
+	if (ret)							\
+		goto label;						\
+})
+
+#define cursor_decode_safe_strn(cur, gfp, len, label1, label2) ({	\
+	char *str = NULL;						\
+	if (len) {							\
+		str = kmalloc(len + 1, gfp);				\
+		if (!str)						\
+			goto label2;					\
+		ret = ceph_msg_data_cursor_copy(cur, str, len);		\
+		if (ret) {						\
+			kfree(str);					\
+			goto label1;					\
+		}							\
+		str[len] = '\0';					\
+	}								\
+	str;								\
+})
+
+#define cursor_decode_safe_str(cur, gfp, label1, label2) ({		\
+	size_t len;							\
+	len = cursor_decode_safe(32, cur, label1);			\
+	cursor_decode_safe_strn(cur, gfp, len, label1, label2);		\
+})
 
 struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
 			       gfp_t flags, bool can_fail);
