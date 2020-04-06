@@ -1,0 +1,7 @@
+o CEPH_MSG_PING is missing
+o In order to support RBD "exclusive-lock" image feature OP_WATCH and
+  OP_LIST_WACHERS should be fully implemented. In order to use numjobs>1
+  for rbd.fio load image should be created without exclusive-lock, i.e.
+  ./bin/rbd create --size 1G rbd/fio_test --image-feature layering
+o Crypto is a noop, so cephx should be supported
+o make fast crc32c, like original Ceph has
