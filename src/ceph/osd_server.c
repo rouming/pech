@@ -993,7 +993,7 @@ static int handle_osd_op_stat(struct ceph_msg *msg,
 
 	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
 	ceph_encode_timespec64(&ts, &obj->o_mtime);
-	ceph_encode_64(p, obj->o_size);
+	ceph_encode_64(&p, obj->o_size);
 	ceph_encode_copy(&p, &ts, sizeof(ts));
 
 	return 0;
