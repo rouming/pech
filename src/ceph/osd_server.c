@@ -828,11 +828,15 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 	}
 out:
 	if (modified) {
+		bool truncate = (op->op == CEPH_OSD_OP_WRITEFULL);
+
 		obj->o_mtime = req->mtime;
 
-		/* Extend object size if needed */
-		if (dst_off > obj->o_size)
+		/* Extend object size if needed or truncate */
+		if (dst_off > obj->o_size || truncate)
 			obj->o_size = dst_off;
+
+		/* FIXME: need to free the rest in case of truncate */
 	}
 
 	return ret;
@@ -1800,6 +1804,7 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 
 	switch (op->op) {
 	case CEPH_OSD_OP_WRITE:
+	case CEPH_OSD_OP_WRITEFULL:
 		ret = handle_osd_op_write(msg, req, op, in_cur);
 		break;
 	case CEPH_OSD_OP_READ:
