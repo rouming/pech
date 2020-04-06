@@ -1279,6 +1279,24 @@ static int handle_osd_op_call(struct ceph_msg *msg,
 	return 0;
 }
 
+static int handle_osd_op_create(struct ceph_msg *msg,
+				struct ceph_msg_osd_op *req,
+				struct ceph_osd_req_op *op)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_osds_object *obj;
+
+	obj = ceph_lookup_object(osds, req);
+	if (obj)
+		return op->flags & CEPH_OSD_OP_FLAG_EXCL ? -EEXIST : 0;
+
+	obj = ceph_create_and_insert_object(osds, req);
+	if (!obj)
+		return -ENOMEM;
+
+	return 0;
+}
+
 static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 			 struct ceph_osd_req_op *op,
 			 struct ceph_msg_data_cursor *in_cur)
@@ -1297,6 +1315,9 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		break;
 	case CEPH_OSD_OP_CALL:
 		ret = handle_osd_op_call(msg, req, op, in_cur);
+		break;
+	case CEPH_OSD_OP_CREATE:
+		ret = handle_osd_op_create(msg, req, op);
 		break;
 	default:
 		pr_err("%s: unknown op type 0x%x\n",
