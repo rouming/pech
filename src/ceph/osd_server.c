@@ -65,6 +65,7 @@ struct ceph_osds_object {
 	struct ceph_hobject_id o_hoid;
 	struct rb_root         o_blocks;  /* all blocks of the object */
 	struct rb_root         o_omap;    /* omap of the object */
+	struct rb_root         o_xattrs;  /* xattr of the object */
 	size_t                 o_size;    /* size of an object */
 	struct timespec64      o_mtime;   /* modification time of an object */
 };
@@ -76,7 +77,7 @@ struct ceph_osds_block {
 };
 
 struct ceph_osds_omap_entry {
-	struct rb_node         e_node;   /* node of ->o_omap */
+	struct rb_node         e_node;   /* node of ->o_omap or ->o_xattrs */
 	char                   *e_key;
 	unsigned int           e_key_len;
 	struct ceph_pagelist   *e_val_pl;
@@ -160,6 +161,7 @@ ceph_create_and_insert_object(struct ceph_osd_server *osds,
 	obj->o_size = 0;
 	obj->o_blocks = RB_ROOT;
 	obj->o_omap = RB_ROOT;
+	obj->o_xattrs = RB_ROOT;
 	RB_CLEAR_NODE(&obj->o_node);
 	ceph_hoid_init(&obj->o_hoid);
 	ceph_hoid_copy(&obj->o_hoid, &req->hoid);
@@ -306,6 +308,7 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 		dst->alloc_hint.expected_write_size =
 		    cpu_to_le64(src->alloc_hint.expected_write_size);
 		break;
+	case CEPH_OSD_OP_GETXATTR:
 	case CEPH_OSD_OP_SETXATTR:
 	case CEPH_OSD_OP_CMPXATTR:
 		dst->xattr.name_len = cpu_to_le32(src->xattr.name_len);
@@ -563,6 +566,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->alloc_hint.expected_write_size =
 		    le64_to_cpu(src->alloc_hint.expected_write_size);
 		break;
+	case CEPH_OSD_OP_GETXATTR:
 	case CEPH_OSD_OP_SETXATTR:
 	case CEPH_OSD_OP_CMPXATTR:
 		dst->xattr.name_len = le32_to_cpu(src->xattr.name_len);
@@ -1092,6 +1096,7 @@ static int osd_op_to_req_op(const struct ceph_osd_op *src,
 		dst->alloc_hint.expected_write_size =
 			src->alloc_hint.expected_write_size;
 		break;
+	case CEPH_OSD_OP_GETXATTR:
 	case CEPH_OSD_OP_SETXATTR:
 	case CEPH_OSD_OP_CMPXATTR:
 		dst->xattr.name_len = src->xattr.name_len;
@@ -1778,6 +1783,143 @@ enomem:
 	goto err;
 }
 
+static int handle_osd_op_getxattr(struct ceph_msg *msg,
+				  struct ceph_msg_osd_op *req,
+				  struct ceph_osd_req_op *op,
+				  struct ceph_msg_data_cursor *in_cur)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_osds_omap_entry *ome;
+	struct ceph_osds_object *obj;
+	struct ceph_pagelist *pl = NULL;
+	int ret;
+
+	char *key = NULL;
+
+	key = cursor_decode_safe_strn(in_cur, GFP_KERNEL, op->xattr.name_len,
+				      einval, enomem);
+	if (!key)
+		goto einval;
+
+	pl = ceph_pagelist_alloc(GFP_KERNEL);
+	if (!pl)
+		goto enomem;
+
+	obj = ceph_lookup_object(osds, req);
+	if (!obj)
+		goto einval;
+
+	ome = lookup_omap_entry(&obj->o_xattrs, key);
+	if (!ome)
+		goto enodata;
+
+	/* Encode value */
+	ret = ceph_pagelist_encode_pagelist(pl, ome->e_val_pl, false);
+	if (ret)
+		goto err;
+
+	/* Setup output length */
+	op->outdata_len = pl->length;
+	op->outdata = &op->raw_data;
+
+	/* Give ownership to msg */
+	ceph_msg_data_pagelist_init(&op->raw_data, pl);
+
+	kfree(key);
+
+	return 0;
+
+err:
+	kfree(key);
+	if (pl)
+		ceph_pagelist_release(pl);
+	return ret;
+
+einval:
+	ret = -EINVAL;
+	goto err;
+
+enomem:
+	ret = -ENOMEM;
+	goto err;
+
+enodata:
+	ret = -ENODATA;
+	goto err;
+}
+
+static int handle_osd_op_setxattr(struct ceph_msg *msg,
+				  struct ceph_msg_osd_op *req,
+				  struct ceph_osd_req_op *op,
+				  struct ceph_msg_data_cursor *in_cur)
+{
+	struct ceph_osd_server *osds = con_to_osds(msg->con);
+	struct ceph_osds_omap_entry *ome;
+	struct ceph_osds_object *obj;
+	size_t val_len;
+	int ret;
+
+	char *key = NULL;
+
+	key = cursor_decode_safe_strn(in_cur, GFP_KERNEL, op->xattr.name_len,
+				      einval, enomem);
+	if (!key)
+		goto einval;
+
+	/* Find or create an object */
+	obj = ceph_lookup_object(osds, req);
+	if (!obj) {
+		obj = ceph_create_and_insert_object(osds, req);
+		if (!obj)
+			goto enomem;
+	}
+
+	/* Find or create new xattr */
+	ome = lookup_omap_entry(&obj->o_xattrs, key);
+	if (!ome) {
+		ome = ceph_create_and_insert_omap(&obj->o_xattrs, key);
+		if (!ome)
+			goto enomem;
+	}
+
+	/* Get value size */
+	val_len = op->xattr.value_len;
+
+	/* Reserve enough to keep new value */
+	if (val_len > ome->e_val_pl->length) {
+		ret = ceph_pagelist_reserve(ome->e_val_pl,
+					    val_len - ome->e_val_pl->length);
+		if (ret)
+			goto err;
+	}
+
+	/* Copy value */
+	ret = ceph_pagelist_copy_from_cursor(ome->e_val_pl, in_cur,
+					     val_len);
+	/* Should be preallocated, thus no error expected */
+	WARN_ON(ret);
+
+	/* In case old value was bigger than the new one */
+	ret = ceph_pagelist_truncate(ome->e_val_pl, val_len);
+	WARN_ON(ret);
+
+	kfree(key);
+
+	return 0;
+
+err:
+	kfree(key);
+	return ret;
+
+einval:
+	ret = -EINVAL;
+	goto err;
+
+enomem:
+	ret = -ENOMEM;
+	goto err;
+}
+
 static int handle_osd_op_create(struct ceph_msg *msg,
 				struct ceph_msg_osd_op *req,
 				struct ceph_osd_req_op *op)
@@ -1827,6 +1969,12 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		break;
 	case CEPH_OSD_OP_OMAPGETKEYS:
 		ret = handle_osd_op_omapgetkeys(msg, req, op, in_cur);
+		break;
+	case CEPH_OSD_OP_GETXATTR:
+		ret = handle_osd_op_getxattr(msg, req, op, in_cur);
+		break;
+	case CEPH_OSD_OP_SETXATTR:
+		ret = handle_osd_op_setxattr(msg, req, op, in_cur);
 		break;
 	case CEPH_OSD_OP_CREATE:
 		ret = handle_osd_op_create(msg, req, op);
@@ -2066,6 +2214,11 @@ static void destroy_omap(struct ceph_osds_object *obj)
 	__destroy_omap(&obj->o_omap);
 }
 
+static void destroy_xattrs(struct ceph_osds_object *obj)
+{
+	__destroy_omap(&obj->o_xattrs);
+}
+
 static void destroy_objects(struct ceph_osd_server *osds)
 {
 	struct ceph_osds_object *obj;
@@ -2074,6 +2227,7 @@ static void destroy_objects(struct ceph_osd_server *osds)
 				    typeof(*obj), o_node))) {
 		destroy_blocks(obj);
 		destroy_omap(obj);
+		destroy_xattrs(obj);
 		erase_object_by_hoid(&osds->s_objects, obj);
 		kfree(obj);
 	}
