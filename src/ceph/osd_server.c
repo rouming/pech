@@ -884,6 +884,10 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	if (!obj)
 		return -ENOENT;
 
+	if (!op->extent.length)
+		/* Nothing to do */
+		return 0;
+
 	if (op->extent.offset >= obj->o_size)
 		/* Offset is beyond the object, nothing to do */
 		return 0;
