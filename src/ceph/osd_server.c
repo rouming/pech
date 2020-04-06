@@ -74,6 +74,18 @@ struct ceph_osds_block {
 	off_t                  b_off;     /* offset inside a whole object */
 };
 
+/**
+ * Define RB functions for object lookup and insert by hoid
+ */
+DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
+		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
+		 o_node);
+
+/**
+ * Define RB functions for object block lookup by offset
+ */
+DEFINE_RB_FUNCS(object_block_by_off, struct ceph_osds_block, b_off, b_node);
+
 static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 			 struct ceph_osd_req_op *op,
 			 struct ceph_msg_data_cursor *in_cur);
@@ -110,18 +122,6 @@ static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 
 	return 0;
 }
-
-/**
- * Define RB functions for object lookup and insert by hoid
- */
-DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
-		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
-		 o_node);
-
-/**
- * Define RB functions for object block lookup by offset
- */
-DEFINE_RB_FUNCS(object_block_by_off, struct ceph_osds_block, b_off, b_node);
 
 static struct ceph_osds_object *
 ceph_lookup_object(struct ceph_osd_server *osds,
