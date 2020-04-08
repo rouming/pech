@@ -130,6 +130,15 @@
 	}							\
 }
 
+static int copyout(void __user *to, const void *from, size_t n)
+{
+	if (access_ok(to, n)) {
+		kasan_check_read(from, n);
+		n = raw_copy_to_user(to, from, n);
+	}
+	return n;
+}
+
 static int copyin(void *to, const void __user *from, size_t n)
 {
 	if (access_ok(from, n)) {
@@ -197,6 +206,11 @@ int iov_iter_for_each_range(struct iov_iter *i, size_t bytes,
 	return err;
 }
 
+static void memcpy_to_page(struct page *page, size_t offset, const char *from, size_t len)
+{
+	memcpy(page_address(page) + offset, from, len);
+}
+
 static void memcpy_from_page(char *to, struct page *page,
 			     size_t offset, size_t len)
 {
@@ -217,6 +231,25 @@ size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
 		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
 				 v.bv_offset, v.bv_len),
 		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+	)
+
+	return bytes;
+}
+
+size_t _copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
+{
+	const char *from = addr;
+	if (unlikely(iov_iter_is_pipe(i))) {
+		WARN_ON(1);
+		return 0;
+	}
+	if (iter_is_iovec(i))
+		might_fault();
+	iterate_and_advance(i, bytes, v,
+		copyout(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len),
+		memcpy_to_page(v.bv_page, v.bv_offset,
+			       (from += v.bv_len) - v.bv_len, v.bv_len),
+		memcpy(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len)
 	)
 
 	return bytes;
