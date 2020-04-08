@@ -467,7 +467,6 @@ static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 {
 	ceph_oloc_init(&req->oloc);
 	ceph_hoid_init(&req->hoid);
-	memset(&req->ops, 0, sizeof(req->ops));
 	req->snaps = NULL;
 	req->object = NULL;
 }
@@ -520,6 +519,8 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 	dst->op = le16_to_cpu(src->op);
 	dst->flags = le32_to_cpu(src->flags);
 	dst->indata_len = le32_to_cpu(src->payload_len);
+	dst->outdata = NULL;
+	dst->outdata_len = 0;
 
 	switch (dst->op) {
 	case CEPH_OSD_OP_STAT:
