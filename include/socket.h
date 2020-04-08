@@ -60,6 +60,9 @@ struct socket {
 	int                    state;
 	const struct proto_ops *ops;
 	int                    fd;
+	char                   cache[128<<10]; /* must be ^2 */
+	unsigned int           cache_pos;
+	unsigned int           cache_len;
 };
 
 extern bool sk_stream_is_writeable(const struct sock *sk);

@@ -491,21 +491,83 @@ static unsigned int iov_iter_to_iovec(struct iov_iter *iter,
 int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
 {
 	struct iov_iter *iter = &kmsg->msg_iter;
-	struct iovec iov[iter->nr_segs];
+	struct iovec iovec[iter->nr_segs + 2];
 	struct msghdr msg = {
 		.msg_name    = kmsg->msg_name,
 		.msg_namelen = kmsg->msg_namelen,
-		.msg_iov     = iov,
+		.msg_iov     = iovec,
 		.msg_control = kmsg->msg_control,
 		.msg_controllen = kmsg->msg_controllen,
 		.msg_flags    = kmsg->msg_flags
 	};
+	struct iovec *iov = iovec;
 	int ret;
 
-	msg.msg_iovlen = iov_iter_to_iovec(iter, iov);
+	off_t cache_pos;
+	int read = 0;
+
+	/* First consume from the cache if there is something */
+	if (sock->cache_len) {
+		size_t len_to_end = sizeof(sock->cache) - sock->cache_pos;
+		size_t len = min_t(size_t, iter->count, sock->cache_len);
+
+		if (!(flags & MSG_TRUNC)) {
+			/* First half */
+			read += _copy_to_iter(sock->cache + sock->cache_pos,
+					      min(len_to_end, len), iter);
+			if (len_to_end < len)
+				/* Second half */
+				read += _copy_to_iter(sock->cache,
+						len - len_to_end, iter);
+		} else {
+			read += len;
+			iov_iter_advance(iter, len);
+		}
+
+		sock->cache_len -= len;
+		sock->cache_pos += len;
+		sock->cache_pos &= (sizeof(sock->cache)-1);
+
+		BUG_ON(sock->cache_len && iter->count);
+
+		/* Leave earlier if we are done */
+		if (!iter->count)
+			return read;
+	}
+
+	/* Setup iovec from iter if there is still something left to read */
+	if (iter->count) {
+		msg.msg_iovlen = iov_iter_to_iovec(iter, iovec);
+		iov = &iovec[msg.msg_iovlen];
+	}
+
+	/* Cache can't be full, there should be some space left */
+	BUG_ON(sock->cache_len == sizeof(sock->cache));
+
+	/* Read more into cache, thus take position of free space */
+	cache_pos = (sock->cache_pos + sock->cache_len) &
+		(sizeof(sock->cache)-1);
+
+	/* First half */
+	iov[0].iov_base = sock->cache + cache_pos;
+	iov[0].iov_len = min(sizeof(sock->cache) - sock->cache_len,
+			     sizeof(sock->cache) - cache_pos);
+	msg.msg_iovlen += 1;
+	if (iov[0].iov_len < sizeof(sock->cache) - sock->cache_len) {
+		/* Second half */
+		iov[1].iov_base = sock->cache;
+		iov[1].iov_len = (sizeof(sock->cache) - sock->cache_len) -
+			iov[0].iov_len;
+		msg.msg_iovlen += 1;
+	}
 
 	ret = recvmsg(sock->fd, &msg, flags);
-	if (unlikely(ret < 0)) {
+	if (read) {
+		/* Ignore errors from sock if we've read something from cache */
+		ret = ret < 0 ? 0 : ret;
+		goto advance_cache;
+	}
+	else if (unlikely(ret < 0)) {
 		ret = -errno;
 	} else if (unlikely(!ret)) {
 		/*
@@ -516,6 +578,14 @@ int sock_recvmsg(struct socket *sock, struct kmsghdr *kmsg, int flags)
 		sock->state = SS_DISCONNECTING;
 		sock->ev.revents |= EPOLLIN;
 		event_item_set(&sock->ev);
+	} else {
+		size_t rest_to_read;
+advance_cache:
+		rest_to_read = min_t(size_t, ret, iter->count);
+		read += rest_to_read;
+		/* Advance cache length */
+		sock->cache_len += ret - rest_to_read;
+		ret = read;
 	}
 
 	return ret;
