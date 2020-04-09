@@ -274,6 +274,7 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
+	case CEPH_OSD_OP_SPARSE_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -526,6 +527,7 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
+	case CEPH_OSD_OP_SPARSE_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -884,9 +886,11 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 	struct ceph_osd_server *osds = con_to_osds(msg->con);
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
+	size_t len_read, map_size;
 	off_t off, blk_off;
-	size_t len_read;
 	unsigned off_inpg;
+	bool is_sparse;
+	void *p;
 	int ret;
 
 	struct ceph_bvec_iter it;
@@ -904,19 +908,33 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 		/* Offset is beyond the object, nothing to do */
 		return 0;
 
+	is_sparse = (op->op == CEPH_OSD_OP_SPARSE_READ);
+	map_size = is_sparse ? 4 + 8 + 8 + 4: 0;
+
 	len_read = min(op->extent.length, obj->o_size - op->extent.offset);
 
 	/* Allocate bvec for the read chunk */
-	ret = alloc_bvec(&it, len_read);
+	ret = alloc_bvec(&it, map_size + len_read);
 	if (ret)
 		return ret;
 
 	/* Setup output length and data */
-	op->outdata_len = len_read;
+	op->outdata_len = map_size + len_read;
 	op->outdata = &op->extent.osd_data;
 
 	/* Give ownership to msg */
 	ceph_msg_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
+
+	/* Here we always have 1 segment bvec, with mpages though */
+	p = page_address(it.bvecs->bv_page);
+
+	if (is_sparse) {
+		/* Encode extent map, for now we have only 1 entry */
+		ceph_encode_32(&p, 1); /* map size */
+		ceph_encode_64(&p, op->extent.offset); /* offset as a key */
+		ceph_encode_64(&p, len_read); /* len as a value */
+		ceph_encode_32(&p, len_read); /* len of the following extent */
+	}
 
 	off_inpg = 0;
 	off = op->extent.offset;
@@ -931,8 +949,7 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 			size_t len_zero = blk->b_off - off;
 
 			len_zero = min(len_zero, len_read);
-			memset(page_address(it.bvecs->bv_page) + off_inpg,
-			       0, len_zero);
+			memset(p + off_inpg, 0, len_zero);
 
 			len_read -= len_zero;
 			off_inpg += len_zero;
@@ -941,7 +958,6 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 
 		/* Copy block */
 		if (len_read) {
-			void *dst = page_address(it.bvecs->bv_page);
 			void *src = page_address(blk->b_page);
 			off_t off_inblk = off & ~OSDS_BLOCK_MASK;
 			size_t len_copy;
@@ -949,8 +965,7 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 			len_copy = min((size_t)OSDS_BLOCK_SIZE - off_inblk,
 				       len_read);
 
-			memcpy(dst + off_inpg, src + off_inblk,
-			       len_copy);
+			memcpy(p + off_inpg, src + off_inblk, len_copy);
 
 			len_read -= len_copy;
 			off_inpg += len_copy;
@@ -966,8 +981,7 @@ static int handle_osd_op_read(struct ceph_msg *msg,
 
 	if (len_read)
 		/* Zero out the rest */
-		memset(page_address(it.bvecs->bv_page) + off_inpg,
-		       0, len_read);
+		memset(p + off_inpg, 0, len_read);
 
 	return 0;
 }
@@ -1059,6 +1073,7 @@ static int osd_op_to_req_op(const struct ceph_osd_op *src,
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
+	case CEPH_OSD_OP_SPARSE_READ:
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 	case CEPH_OSD_OP_ZERO:
@@ -1954,6 +1969,7 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
+	case CEPH_OSD_OP_SPARSE_READ:
 		ret = handle_osd_op_read(msg, req, op);
 		break;
 	case CEPH_OSD_OP_STAT:
