@@ -155,6 +155,8 @@ int event_item_del(struct event_item *item)
 		ret = __event_item_mod(item, EPOLL_CTL_DEL);
 		item->fd = -1;
 	}
+	/* Delete from set events list */
+	list_del_init(&item->entry);
 
 	return ret;
 }
