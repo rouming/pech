@@ -105,9 +105,10 @@
 #define CON_FLAG_LOSSYTX           0  /* we can close channel or drop
 				       * messages on errors */
 #define CON_FLAG_KEEPALIVE_PENDING 1  /* we need to send a keepalive */
-#define CON_FLAG_WRITE_PENDING	   2  /* we have data ready to send */
-#define CON_FLAG_SOCK_CLOSED	   3  /* socket state changed to closed */
-#define CON_FLAG_BACKOFF           4  /* need to retry queuing delayed work */
+#define CON_FLAG_KEEPALIVE_ACK_PEN 2  /* we need to send a keepalive ack */
+#define CON_FLAG_WRITE_PENDING	   3  /* we have data ready to send */
+#define CON_FLAG_SOCK_CLOSED	   4  /* socket state changed to closed */
+#define CON_FLAG_BACKOFF           5  /* need to retry queuing delayed work */
 
 
 /*
@@ -123,6 +124,7 @@ static bool con_flag_valid(unsigned long con_flag)
 	switch (con_flag) {
 	case CON_FLAG_LOSSYTX:
 	case CON_FLAG_KEEPALIVE_PENDING:
+	case CON_FLAG_KEEPALIVE_ACK_PEN:
 	case CON_FLAG_WRITE_PENDING:
 	case CON_FLAG_SOCK_CLOSED:
 	case CON_FLAG_BACKOFF:
@@ -751,6 +753,7 @@ void ceph_con_close(struct ceph_connection *con)
 
 	con_flag_clear(con, CON_FLAG_LOSSYTX);	/* so we retry next connect */
 	con_flag_clear(con, CON_FLAG_KEEPALIVE_PENDING);
+	con_flag_clear(con, CON_FLAG_KEEPALIVE_ACK_PEN);
 	con_flag_clear(con, CON_FLAG_WRITE_PENDING);
 	con_flag_clear(con, CON_FLAG_BACKOFF);
 
@@ -1490,16 +1493,13 @@ static void prepare_write_seq(struct ceph_connection *con)
 /*
  * Prepare to write keepalive ack byte.
  */
-static void prepare_write_keepalive_ack(struct ceph_connection *con,
-					struct ceph_timespec *ceph_ts)
+static void prepare_write_keepalive_ack(struct ceph_connection *con)
 {
 	dout("prepare_write_keepalive_ack %p\n", con);
 	con_out_kvec_reset(con);
 	if (con->peer_features & CEPH_FEATURE_MSGR_KEEPALIVE2) {
 		con_out_kvec_add(con, sizeof(tag_keepalive2_ack),
 				 &tag_keepalive2_ack);
-		typecheck(typeof(*ceph_ts), con->out_temp_keepalive2);
-		memcpy(&con->out_temp_keepalive2, ceph_ts, sizeof(*ceph_ts));
 		con_out_kvec_add(con, sizeof(con->out_temp_keepalive2),
 				 &con->out_temp_keepalive2);
 	} else {
@@ -2906,14 +2906,14 @@ static int read_keepalive_timespec(struct ceph_connection *con,
 
 static int read_keepalive(struct ceph_connection *con)
 {
-	struct ceph_timespec ceph_ts;
 	int ret;
 
-	ret = read_keepalive_timespec(con, &ceph_ts);
+	ret = read_keepalive_timespec(con, &con->out_temp_keepalive2);
 	if (ret <= 0)
 		return ret;
 
-	prepare_write_keepalive_ack(con, &ceph_ts);
+	/* Schedule keepalive ACK write */
+	con_flag_set(con, CON_FLAG_KEEPALIVE_ACK_PEN);
 	prepare_read_tag(con);
 	return 1;
 }
@@ -3010,6 +3010,10 @@ do_next:
 	if (con->state == CON_STATE_OPEN) {
 		if (con_flag_test_and_clear(con, CON_FLAG_KEEPALIVE_PENDING)) {
 			prepare_write_keepalive(con);
+			goto more;
+		}
+		if (con_flag_test_and_clear(con, CON_FLAG_KEEPALIVE_ACK_PEN)) {
+			prepare_write_keepalive_ack(con);
 			goto more;
 		}
 		/* is anything else pending? */
@@ -3695,6 +3699,7 @@ static void clear_standby(struct ceph_connection *con)
 		con->connect_seq++;
 		WARN_ON(con_flag_test(con, CON_FLAG_WRITE_PENDING));
 		WARN_ON(con_flag_test(con, CON_FLAG_KEEPALIVE_PENDING));
+		WARN_ON(con_flag_test(con, CON_FLAG_KEEPALIVE_ACK_PEN));
 	}
 }
 
