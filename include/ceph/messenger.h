@@ -449,6 +449,7 @@ void ceph_msg_data_add_bio(struct ceph_msg *msg, struct ceph_bio_iter *bio_pos,
 void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
 			     struct ceph_bvec_iter *bvec_pos,
 			     unsigned int num_bvec, bool own_bvec);
+void ceph_msg_data_add_kvec(struct ceph_msg *msg, struct ceph_kvec *kvec);
 
 void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
 			       struct ceph_msg_data *data,

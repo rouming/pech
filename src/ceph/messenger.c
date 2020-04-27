@@ -3988,18 +3988,33 @@ size_t ceph_msg_data_length(struct ceph_msg_data *data)
 }
 EXPORT_SYMBOL(ceph_msg_data_length);
 
-void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *new)
+void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *data)
 {
-	struct ceph_msg_data *data;
+	u64 length = ceph_msg_data_length(data);
 
-	if (new->type == CEPH_MSG_DATA_NONE)
-		return;
-	if (new->type == CEPH_MSG_DATA_PAGES && !new->length)
-		return;
-
-	data = ceph_msg_data_get_next(msg);
-	*data = *new;
-	msg->data_length += ceph_msg_data_length(data);
+	if (data->type == CEPH_MSG_DATA_PAGES) {
+		BUG_ON(length > (u64)SIZE_MAX);
+		if (likely(length))
+			ceph_msg_data_add_pages(msg, data->pages,
+						length, data->alignment,
+						data->pages_from_pool,
+						false);
+	} else if (data->type == CEPH_MSG_DATA_PAGELIST) {
+		BUG_ON(!length);
+		ceph_msg_data_add_pagelist(msg, data->pagelist);
+#ifdef CONFIG_BLOCK
+	} else if (data->type == CEPH_MSG_DATA_BIO) {
+		ceph_msg_data_add_bio(msg, &data->bio_pos, length);
+#endif
+	} else if (data->type == CEPH_MSG_DATA_BVECS) {
+		ceph_msg_data_add_bvecs(msg, &data->bvec_pos,
+					data->num_bvecs,
+					data->own_bvecs);
+	} else if (data->type == CEPH_MSG_DATA_KVEC) {
+		ceph_msg_data_add_kvec(msg, data->kvec);
+	} else {
+		BUG_ON(data->type != CEPH_MSG_DATA_NONE);
+	}
 }
 EXPORT_SYMBOL(ceph_msg_data_add);
 
@@ -4062,6 +4077,17 @@ void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
 	msg->data_length += bvec_pos->iter.bi_size;
 }
 EXPORT_SYMBOL(ceph_msg_data_add_bvecs);
+
+void ceph_msg_data_add_kvec(struct ceph_msg *msg, struct ceph_kvec *kvec)
+{
+	struct ceph_msg_data *data;
+
+	data = ceph_msg_data_get_next(msg);
+	ceph_msg_data_kvec_init(data, kvec);
+
+	msg->data_length += kvec->length;
+}
+EXPORT_SYMBOL(ceph_msg_data_add_kvecs);
 
 /*
  * construct a new message with given type, size
