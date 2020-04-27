@@ -935,7 +935,6 @@ static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 				      size_t bytes)
 {
 	struct ceph_bio_iter *it = &cursor->bio_iter;
-	struct page *page = bio_iter_page(it->bio, it->iter);
 
 	BUG_ON(bytes > cursor->resid);
 	BUG_ON(bytes > bio_iter_len(it->bio, it->iter));
