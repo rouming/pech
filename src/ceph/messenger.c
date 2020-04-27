@@ -1124,8 +1124,8 @@ static void ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor)
 	BUG_ON(cursor->offset + cursor->resid != pagelist->length);
 
 	ceph_msg_data_set_iter(cursor, cursor->page,
-			       cursor->page_offset % ~PAGE_MASK,
-			       min(PAGE_SIZE - cursor->page_offset,
+			       cursor->offset % ~PAGE_MASK,
+			       min(PAGE_SIZE - cursor->offset,
 				   cursor->resid));
 }
 
