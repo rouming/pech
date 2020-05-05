@@ -2021,6 +2021,7 @@ static int handle_osd_op(struct ceph_msg *msg, struct ceph_msg_osd_op *req,
 static void handle_osd_ops(struct ceph_connection *con, struct ceph_msg *msg)
 {
 	struct ceph_osd_client *osdc = con_to_osdc(con);
+	unsigned long _1s = msecs_to_jiffies(1000);
 	struct ceph_msg_data_cursor in_cur;
 	struct ceph_msg_osd_op req;
 	struct ceph_msg *reply;
@@ -2034,6 +2035,15 @@ static void handle_osd_ops(struct ceph_connection *con, struct ceph_msg *msg)
 		pr_err("%s: con %p, failed to decode a message, ret=%d\n",
 		       __func__, con, ret);
 		return;
+	}
+
+	/* Check we are up-to-date. XXX We need PG and a lot more. */
+	ret = ceph_wait_for_osdmap(osdc->client, req.epoch, _1s);
+	if (unlikely(ret)) {
+		pr_err("%s: wait for osd map failed, ret=%d\n",
+		       __func__, ret);
+		ret = -EAGAIN;
+		goto send_reply;
 	}
 
 	/* Init iterator for input data, ->data_length can be 0 */
@@ -2055,6 +2065,7 @@ static void handle_osd_ops(struct ceph_connection *con, struct ceph_msg *msg)
 			break;
 	}
 
+send_reply:
 	/* Create reply message */
 	reply = create_osd_op_reply(&req, ret, osdc->osdmap->epoch,
 			/* TODO: Not actually clear to me when to set those */
