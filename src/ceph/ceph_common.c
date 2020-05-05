@@ -772,6 +772,17 @@ int ceph_open_session(struct ceph_client *client)
 }
 EXPORT_SYMBOL(ceph_open_session);
 
+int ceph_wait_for_osdmap(struct ceph_client *client, u64 epoch,
+			 unsigned long timeout)
+{
+	if (client->osdc.osdmap->epoch >= epoch)
+		return 0;
+
+	ceph_osdc_maybe_request_map(&client->osdc);
+	return ceph_monc_wait_osdmap(&client->monc, epoch, timeout);
+}
+EXPORT_SYMBOL(ceph_wait_for_osdmap);
+
 int ceph_wait_for_latest_osdmap(struct ceph_client *client,
 				unsigned long timeout)
 {
@@ -782,11 +793,7 @@ int ceph_wait_for_latest_osdmap(struct ceph_client *client,
 	if (ret)
 		return ret;
 
-	if (client->osdc.osdmap->epoch >= newest_epoch)
-		return 0;
-
-	ceph_osdc_maybe_request_map(&client->osdc);
-	return ceph_monc_wait_osdmap(&client->monc, newest_epoch, timeout);
+	return ceph_wait_for_osdmap(client, newest_epoch, timeout);
 }
 EXPORT_SYMBOL(ceph_wait_for_latest_osdmap);
 
