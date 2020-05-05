@@ -2201,8 +2201,6 @@ static void ceph_stop_osd_server(struct ceph_osd_server *osds)
 			break;
 		}
 		if (!ret &&
-		    ceph_osdmap_contains(client->osdc.osdmap, osds->osd,
-					 ceph_client_addr(client)) &&
 		    !ceph_osd_is_up(client->osdc.osdmap, osds->osd)) {
 			is_down = true;
 			break;
