@@ -43,6 +43,12 @@
 
 #define CEPH_OPT_DEFAULT   (CEPH_OPT_TCP_NODELAY)
 
+enum ceph_rep_type {
+	CEPH_REP_NONE,
+	CEPH_REP_PRIMARY_COPY,
+	CEPH_REP_CHAIN,
+};
+
 #define ceph_set_opt(options, opt) \
 	(options)->flags |= CEPH_OPT_##opt;
 #define ceph_test_opt(options, opt) \
@@ -56,6 +62,8 @@ struct ceph_options {
 	unsigned long osd_idle_ttl;		/* jiffies */
 	unsigned long osd_keepalive_timeout;	/* jiffies */
 	unsigned long osd_request_timeout;	/* jiffies */
+
+	enum ceph_rep_type replication;
 
 	/*
 	 * any type that can't be simply compared or doesn't need
