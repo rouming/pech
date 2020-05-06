@@ -262,6 +262,7 @@ enum {
 	Opt_key,
 	Opt_ip,
 	Opt_class_dir,
+	Opt_replication,
 	/* string args above */
 	Opt_share,
 	Opt_crc,
@@ -294,6 +295,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_flag_no ("tcp_nodelay",			Opt_tcp_nodelay),
 	fsparam_flag	("noop_write",			Opt_noop_write),
 	fsparam_string	("class_dir",			Opt_class_dir),
+	fsparam_string	("replication",			Opt_replication),
 	{}
 };
 
@@ -317,6 +319,7 @@ struct ceph_options *ceph_alloc_options(void)
 	opt->mount_timeout = CEPH_MOUNT_TIMEOUT_DEFAULT;
 	opt->osd_idle_ttl = CEPH_OSD_IDLE_TTL_DEFAULT;
 	opt->osd_request_timeout = CEPH_OSD_REQUEST_TIMEOUT_DEFAULT;
+	opt->replication = CEPH_REP_NONE;
 	return opt;
 }
 EXPORT_SYMBOL(ceph_alloc_options);
@@ -544,6 +547,20 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 		param->string = NULL;
 		break;
 
+	case Opt_replication:
+		if (!strcmp("primary-copy", param->string)) {
+			opt->replication = CEPH_REP_PRIMARY_COPY;
+		} else if (!strcmp("chain", param->string)) {
+			opt->replication = CEPH_REP_CHAIN;
+		} else {
+			error_plog(&log, "Failed to parse 'replication': %s\n",
+				   param->string);
+			return -EINVAL;
+		}
+		kfree(param->string);
+		param->string = NULL;
+		break;
+
 	default:
 		BUG();
 	}
@@ -605,6 +622,15 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 	if (opt->osd_request_timeout != CEPH_OSD_REQUEST_TIMEOUT_DEFAULT)
 		seq_printf(m, "osd_request_timeout=%d,",
 			   jiffies_to_msecs(opt->osd_request_timeout) / 1000);
+	if (opt->replication != CEPH_REP_NONE) {
+		const char *rep;
+
+		rep = (opt->replication == CEPH_REP_PRIMARY_COPY ?
+		       "primary-copy" :
+		       opt->replication == CEPH_REP_CHAIN ?
+		       "chain" : "client-based");
+		seq_printf(m, "replication=%s,", rep);
+	}
 
 	/* drop redundant comma */
 	if (m->count != pos)
