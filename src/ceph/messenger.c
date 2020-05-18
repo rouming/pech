@@ -4156,6 +4156,8 @@ static int ceph_con_in_msg_alloc(struct ceph_connection *con, int *skip)
 	mutex_unlock(&con->mutex);
 	msg = con->ops->alloc_msg(con, hdr, skip);
 	mutex_lock(&con->mutex);
+	if (likely(msg))
+		msg->free_msg = con->ops->free_msg;
 	if (con->state != CON_STATE_OPEN) {
 		if (msg)
 			ceph_msg_put(msg);
@@ -4209,6 +4211,9 @@ static void ceph_msg_release(struct kref *kref)
 
 	dout("%s %p\n", __func__, m);
 	WARN_ON(!list_empty(&m->list_head));
+
+	if (m->free_msg)
+		m->free_msg(m);
 
 	msg_con_set(m, NULL);
 

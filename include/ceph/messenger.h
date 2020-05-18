@@ -57,6 +57,7 @@ struct ceph_connection_operations {
 	struct ceph_msg * (*alloc_msg) (struct ceph_connection *con,
 					struct ceph_msg_header *hdr,
 					int *skip);
+	void (*free_msg) (struct ceph_msg *msg);
 
 	void (*reencode_message) (struct ceph_msg *msg);
 
@@ -273,6 +274,7 @@ struct ceph_msg {
 
 	struct ceph_msgpool *pool;
 	struct kmem_cache   *cache;
+	void (*free_msg)(struct ceph_msg *);
 };
 
 /* ceph connection fault delay defaults, for exponential backoff */
