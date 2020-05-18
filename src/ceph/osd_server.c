@@ -48,6 +48,11 @@ struct ceph_msg_osd_op {
 			       *object; /* cached object for OP_CALL */
 };
 
+struct ceph_osds_msg {
+	struct ceph_msg    msg;  /* should be the first in the struct */
+	struct work_struct work;
+};
+
 struct ceph_osds_con {
 	struct ceph_connection con;
 	struct kref ref;
@@ -58,6 +63,10 @@ struct ceph_osd_server {
 	int                    osd;
 	struct ceph_cls_loader class_loader;
 	struct rb_root         s_objects;  /* all objects */
+	struct workqueue_struct
+			       *dispatch_wq;
+	struct kmem_cache      *msg_cache;
+
 };
 
 struct ceph_osds_object {
@@ -2084,11 +2093,27 @@ send_reply:
 
 static void osds_dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 {
-	int type = le16_to_cpu(msg->hdr.type);
+	struct ceph_osd_server *osds = con_to_osds(con);
+	struct ceph_osds_msg *osds_msg;
+
+	osds_msg = container_of(msg, typeof(*osds_msg), msg);
+	queue_work(osds->dispatch_wq, &osds_msg->work);
+}
+
+static void osds_dispatch_workfn(struct work_struct *work)
+{
+	struct ceph_osds_msg *osds_msg;
+	struct ceph_msg *msg;
+	int type;
+
+	osds_msg = container_of(work, typeof(*osds_msg), work);
+	msg = &osds_msg->msg;
+
+	type = le16_to_cpu(msg->hdr.type);
 
 	switch (type) {
 	case CEPH_MSG_OSD_OP:
-		handle_osd_ops(con, msg);
+		handle_osd_ops(msg->con, msg);
 		break;
 	default:
 		pr_err("@@ message type %d, \"%s\"\n", type,
@@ -2099,16 +2124,24 @@ static void osds_dispatch(struct ceph_connection *con, struct ceph_msg *msg)
 	ceph_msg_put(msg);
 }
 
-static struct ceph_msg *alloc_msg_with_bvec(struct ceph_msg_header *hdr)
+static struct ceph_msg *alloc_msg_with_bvec(struct ceph_osd_server *osds,
+					    struct ceph_msg_header *hdr)
 {
-	struct ceph_msg *m;
 	int type = le16_to_cpu(hdr->type);
 	u32 front_len = le32_to_cpu(hdr->front_len);
 	u32 data_len = le32_to_cpu(hdr->data_len);
+	struct ceph_osds_msg *osds_msg;
+	struct ceph_msg *m;
 
-	m = ceph_msg_new2(type, front_len, 1, GFP_KERNEL, false);
+	m = ceph_msg_new3(osds->msg_cache, type, front_len, 1,
+			  GFP_KERNEL, false);
 	if (!m)
 		return NULL;
+
+	/* Message itself starts at the beginning of the struct */
+	BUILD_BUG_ON(offsetof(typeof(*osds_msg), msg) != 0);
+	osds_msg = container_of(m, typeof(*osds_msg), msg);
+	INIT_WORK(&osds_msg->work, osds_dispatch_workfn);
 
 	if (data_len) {
 		struct ceph_bvec_iter it;
@@ -2131,6 +2164,7 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 				       struct ceph_msg_header *hdr,
 				       int *skip)
 {
+	struct ceph_osd_server *osds = con_to_osds(con);
 	int type = le16_to_cpu(hdr->type);
 
 	*skip = 0;
@@ -2139,7 +2173,7 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_OSD_BACKOFF:
 	case CEPH_MSG_WATCH_NOTIFY:
 	case CEPH_MSG_OSD_OP:
-		return alloc_msg_with_bvec(hdr);
+		return alloc_msg_with_bvec(osds, hdr);
 	case CEPH_MSG_OSD_OPREPLY:
 		/* fall through */
 	default:
@@ -2273,9 +2307,12 @@ static void destroy_objects(struct ceph_osd_server *osds)
 void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 {
 	ceph_stop_osd_server(osds);
+	flush_workqueue(osds->dispatch_wq);
 	ceph_destroy_client(osds->client);
 	destroy_objects(osds);
 	ceph_cls_deinit(&osds->class_loader);
+	destroy_workqueue(osds->dispatch_wq);
+	kmem_cache_destroy(osds->msg_cache);
 	kfree(osds);
 }
 
@@ -2289,9 +2326,24 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 	bool is_up;
 	int ret;
 
+	osds->msg_cache = KMEM_CACHE(ceph_osds_msg, 0);
+	if (unlikely(!osds->msg_cache))
+		return -ENOMEM;
+
+	/*
+	 * In order to schedule dispatch workfn immediately WQ_HIGHPRI
+	 * flag is used, that significantly reduces latency.
+	 */
+	osds->dispatch_wq = alloc_workqueue("ceph-osds-wq",
+				WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+	if (unlikely(!osds->dispatch_wq)) {
+		ret = -ENOMEM;
+		goto free_cache;
+	}
+
 	ret = ceph_open_session(client);
 	if (unlikely(ret))
-		return ret;
+		goto destroy_wq;
 
 	pr_notice(">>>> Ceph session opened\n");
 
@@ -2340,6 +2392,10 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 
 err:
 	ceph_messenger_stop_listen(&client->msgr);
+destroy_wq:
+	destroy_workqueue(osds->dispatch_wq);
+free_cache:
+	kmem_cache_destroy(osds->msg_cache);
 
 	return ret;
 }
