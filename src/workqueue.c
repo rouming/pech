@@ -91,6 +91,7 @@ struct workqueue_struct {
 	struct wq_flusher  *first_flusher;	/* first flusher */
 	struct list_head   flusher_queue;	/* flush waiters */
 	struct list_head   flusher_overflow;    /* flush overflow list */
+	int		   flags;	        /* flags */
 	int		   work_color;	        /* work color */
 	int		   flush_color;	        /* flush color */
 	int		   active_flush_color;  /* currently active flush color */
@@ -117,12 +118,18 @@ static struct worker *first_idle_worker(struct worker_pool *pool)
 	return list_first_entry(&pool->idle_list, struct worker, entry);
 }
 
-static void wake_up_worker(struct worker_pool *pool)
+static void wake_up_worker(struct worker_pool *pool, bool highpri)
 {
 	struct worker *worker = first_idle_worker(pool);
+	bool woken;
 
-	if (likely(worker))
-		wake_up_process(worker->task);
+	if (unlikely(!worker))
+	    return;
+
+	woken = __wake_up_process(worker->task, highpri ? WF_HIGHPRI : 0);
+	if (highpri && likely(woken))
+		/* Immediately schedule to the task */
+		preempt_schedule();
 }
 
 /**
@@ -476,13 +483,13 @@ struct workqueue_struct *alloc_workqueue(const char *fmt,
 	struct workqueue_struct *wq;
 
 	(void)fmt;
-	(void)flags;
 
 	wq = calloc(1, sizeof(*wq));
 	if (wq) {
 		INIT_LIST_HEAD(&wq->delayed_works);
 		INIT_LIST_HEAD(&wq->flusher_queue);
 		INIT_LIST_HEAD(&wq->flusher_overflow);
+		wq->flags = flags;
 		wq->active_flush_color = -1;
 		wq->max_active = (max_active ?: WQ_DFL_ACTIVE);
 		wq->max_active = clamp_val(wq->max_active, 1, WQ_MAX_ACTIVE);
@@ -691,7 +698,7 @@ static bool __queue_work(struct work_struct *work)
 	if (likely(wq->nr_active < wq->max_active)) {
 		wq->nr_active++;
 		list_add_tail(&work->entry, &pool->work_list);
-		wake_up_worker(pool);
+		wake_up_worker(pool, wq->flags & WQ_HIGHPRI);
 	} else {
 		work->flags |= WORK_DELAYED;
 		list_add_tail(&work->entry, &wq->delayed_works);

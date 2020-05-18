@@ -8,6 +8,7 @@
 enum {
 	WQ_UNBOUND		= 1 << 1, /* not bound to any cpu */
 	WQ_MEM_RECLAIM		= 1 << 3, /* may be used for memory reclaim */
+	WQ_HIGHPRI		= 1 << 4, /* high priority */
 
 	__WQ_ORDERED		= 1 << 17, /* internal: workqueue is ordered */
 	__WQ_LEGACY		= 1 << 18, /* internal: create*_workqueue() */
