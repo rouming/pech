@@ -272,6 +272,7 @@ struct ceph_msg {
 	unsigned long ack_stamp;        /* tx: when we were acked */
 
 	struct ceph_msgpool *pool;
+	struct kmem_cache   *cache;
 };
 
 /* ceph connection fault delay defaults, for exponential backoff */
@@ -514,6 +515,9 @@ define_cursor_decode(64)
 	cursor_decode_safe_strn(cur, gfp, len, label1, label2);		\
 })
 
+struct ceph_msg *ceph_msg_new3(struct kmem_cache *cache, int type,
+			       int front_len, int max_data_items,
+			       gfp_t flags, bool can_fail);
 struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
 			       gfp_t flags, bool can_fail);
 extern struct ceph_msg *ceph_msg_new(int type, int front_len, gfp_t flags,

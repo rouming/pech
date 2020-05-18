@@ -4032,15 +4032,17 @@ EXPORT_SYMBOL(ceph_msg_data_add_kvecs);
  * construct a new message with given type, size
  * the new msg has a ref count of 1.
  */
-struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
+struct ceph_msg *ceph_msg_new3(struct kmem_cache *cache, int type,
+			       int front_len, int max_data_items,
 			       gfp_t flags, bool can_fail)
 {
 	struct ceph_msg *m;
 
-	m = kmem_cache_zalloc(ceph_msg_cache, flags);
+	m = kmem_cache_zalloc(cache, flags);
 	if (m == NULL)
 		goto out;
 
+	m->cache = cache;
 	m->hdr.type = cpu_to_le16(type);
 	m->hdr.priority = cpu_to_le16(CEPH_MSG_PRIO_DEFAULT);
 	m->hdr.front_len = cpu_to_le32(front_len);
@@ -4085,6 +4087,14 @@ out:
 		     front_len);
 	}
 	return NULL;
+}
+EXPORT_SYMBOL(ceph_msg_new3);
+
+struct ceph_msg *ceph_msg_new2(int type, int front_len, int max_data_items,
+			       gfp_t flags, bool can_fail)
+{
+	return ceph_msg_new3(ceph_msg_cache, type, front_len,
+			     max_data_items, flags, can_fail);
 }
 EXPORT_SYMBOL(ceph_msg_new2);
 
@@ -4189,7 +4199,7 @@ static void ceph_msg_free(struct ceph_msg *m)
 	dout("%s %p\n", __func__, m);
 	kvfree(m->front.iov_base);
 	kfree(m->data);
-	kmem_cache_free(ceph_msg_cache, m);
+	kmem_cache_free(m->cache, m);
 }
 
 static void ceph_msg_release(struct kref *kref)
