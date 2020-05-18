@@ -32,6 +32,8 @@ struct task_struct {
 
 __thread struct task_struct *current;
 static __thread struct task_struct idle_task;
+__thread int preempt_count;
+__thread bool need_resched;
 
 void init_sched(void)
 {
@@ -133,6 +135,9 @@ void schedule(void)
 {
 	static __thread struct task_struct *dead_task;
 	struct task_struct *next;
+
+	BUG_ON(preempt_count);
+	need_resched = false;
 
 	if (current->tsk_flags & PF_WQ_WORKER)
 		wq_worker_sleeping(current);
@@ -259,23 +264,35 @@ unsigned int tasks_to_run(void)
 	return 2;
 }
 
-static int
+static bool
 try_to_wake_up(struct task_struct *task, unsigned int state, int wake_flags)
 {
-	(void)wake_flags;
-
 	if (!(task->tsk_state & state))
-		return 0;
+		return false;
 
 	task->tsk_state = TASK_RUNNING;
-	list_move_tail(&task->tsk_list, &idle_task.tsk_list);
+	if (wake_flags & WF_HIGHPRI)
+		list_move(&task->tsk_list, &idle_task.tsk_list);
+	else
+		list_move_tail(&task->tsk_list, &idle_task.tsk_list);
 
-	return 1;
+	return true;
+}
+
+int __wake_up_process(struct task_struct *p, int wake_flags)
+{
+	return try_to_wake_up(p, TASK_NORMAL, 0);
 }
 
 int wake_up_process(struct task_struct *p)
 {
+	return __wake_up_process(p, 0);
+}
+
+int wake_up_process_sync(struct task_struct *p)
+{
 	return try_to_wake_up(p, TASK_NORMAL, 0);
+
 }
 
 struct sched_timer {

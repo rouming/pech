@@ -2,10 +2,13 @@
 #ifndef _SCHED_H
 #define _SCHED_H
 
+#include "types.h"
+
 /*
  * wake flags
  */
 #define WF_SYNC			0x01		/* Waker goes to sleep after wakeup */
+#define WF_HIGHPRI		0x02		/* Put the task to the head */
 
 
 /* Used in tsk->state: */
@@ -54,6 +57,8 @@ typedef int (task_func_t)(void *arg);
 struct task_struct;
 
 extern __thread struct task_struct *current;
+extern __thread int preempt_count;
+extern __thread bool need_resched;
 
 extern void __set_current_state(long state);
 #define set_current_state(s) __set_current_state(s)
@@ -72,11 +77,39 @@ extern void put_task_struct(struct task_struct *task);
 
 extern bool kthread_should_stop(struct task_struct *task);
 extern int kthread_stop(struct task_struct *task);
+extern int __wake_up_process(struct task_struct *task, int wake_flags);
 extern int wake_up_process(struct task_struct *task);
 
 extern void schedule(void);
 extern long schedule_timeout(long timeout);
 extern long io_schedule_timeout(long timeout);
+
+static inline void preempt_disable(void)
+{
+	preempt_count++;
+}
+
+static inline void preempt_enable(void)
+{
+	BUG_ON(!preempt_count);
+	preempt_count--;
+	if (!preempt_count && need_resched)
+		schedule();
+}
+
+static inline bool preemptable(void)
+{
+	return !preempt_count;
+}
+
+static inline void preempt_schedule(void)
+{
+	need_resched = true;
+	if (!preemptable())
+		return;
+
+	schedule();
+}
 
 static inline int signal_pending(struct task_struct *p)
 {
