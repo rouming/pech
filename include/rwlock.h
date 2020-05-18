@@ -2,10 +2,16 @@
 #ifndef _RWLOCK_H
 #define _RWLOCK_H
 
-#define write_lock_bh(...)
-#define write_unlock_bh(...)
+#include "sched.h"
 
-#define read_lock_bh(...)
-#define read_unlock_bh(...)
+#define write_lock_bh(...)			\
+	({ preempt_disable(); })
+#define write_unlock_bh(...)			\
+	({ preempt_enable(); })
+
+#define read_lock_bh(...)			\
+	({ preempt_disable(); })
+#define read_unlock_bh(...)			\
+	({ preempt_enable(); })
 
 #endif
