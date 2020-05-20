@@ -2046,10 +2046,15 @@ static void handle_osd_ops(struct ceph_connection *con,
 
 	/* Iterate over all operations */
 	for (i = 0; i < m->req.num_ops; i++) {
+		/*
+		 * Cache cursor and advance on indata_len, regardless
+		 * what operation does with cursor.
+		 */
+		struct ceph_msg_data_cursor op_in_cur = in_cur;
 		struct ceph_osd_req_op *op = &m->req.ops[i];
 
 		/* Make things happen */
-		ret = handle_osd_op(m, op, &in_cur);
+		ret = handle_osd_op(m, op, &op_in_cur);
 		if (ret && (op->flags & CEPH_OSD_OP_FLAG_FAILOK) &&
 		    ret != -EAGAIN && ret != -EINPROGRESS)
 			/* Ignore op error and continue executing */
@@ -2057,6 +2062,9 @@ static void handle_osd_ops(struct ceph_connection *con,
 
 		if (ret)
 			break;
+
+		if (op->indata_len)
+			ceph_msg_data_cursor_advance(&in_cur, op->indata_len);
 	}
 
 send_reply:
