@@ -1133,6 +1133,44 @@ static void ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
 }
 
 /*
+ * For a nested cursor inside data.
+ */
+static void
+ceph_msg_data_nested_cursor2_init(struct ceph_msg_data_cursor *cursor,
+				  size_t length)
+{
+	struct ceph_msg_data *data = cursor->data;
+	struct ceph_msg_data_cursor *cursor2;
+
+	BUG_ON(data->type != CEPH_MSG_DATA_CURSOR);
+
+	/*
+	 * Nested cursor should be already inited, thus we copy
+	 * iterator and init ->resid counter.
+	 */
+
+	cursor2 = &data->cursor;
+	cursor->resid = min(length, cursor2->total_resid);
+	cursor->iter = cursor2->iter;
+}
+
+static void
+ceph_msg_data_nested_cursor_advance(struct ceph_msg_data_cursor *cursor,
+				    size_t bytes)
+{
+	struct ceph_msg_data *data = cursor->data;
+	struct ceph_msg_data_cursor *cursor2;
+
+	BUG_ON(data->type != CEPH_MSG_DATA_CURSOR);
+
+	cursor2 = &data->cursor;
+	ceph_msg_data_cursor_advance(cursor2, bytes);
+
+	cursor->resid = min(cursor->resid, cursor2->total_resid);
+	cursor->iter = cursor2->iter;
+}
+
+/*
  * Message data is iterated (sent or received) by internal iov_iter.
  */
 static void __ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor)
@@ -1156,6 +1194,9 @@ static void __ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor)
 		break;
 	case CEPH_MSG_DATA_KVEC:
 		ceph_msg_data_kvec_cursor_init(cursor, length);
+		break;
+	case CEPH_MSG_DATA_CURSOR:
+		ceph_msg_data_nested_cursor2_init(cursor, length);
 		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
@@ -1210,6 +1251,9 @@ void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 		break;
 	case CEPH_MSG_DATA_KVEC:
 		ceph_msg_data_kvec_advance(cursor, bytes);
+		break;
+	case CEPH_MSG_DATA_CURSOR:
+		ceph_msg_data_nested_cursor_advance(cursor, bytes);
 		break;
 	case CEPH_MSG_DATA_NONE:
 	default:
@@ -3840,6 +3884,10 @@ void ceph_msg_data_release(struct ceph_msg_data *data)
 		ceph_bvecs_release(&data->bvec_pos, data->num_bvecs);
 	} else if (data->type == CEPH_MSG_DATA_KVEC) {
 		ceph_kvec_release(data->kvec);
+	} else if (data->type == CEPH_MSG_DATA_CURSOR) {
+		/* Noop */
+	} else {
+		BUG_ON(data->type != CEPH_MSG_DATA_NONE);
 	}
 	ceph_msg_data_init(data);
 }
@@ -3903,6 +3951,15 @@ void ceph_msg_data_kvec_init(struct ceph_msg_data *data,
 }
 EXPORT_SYMBOL(ceph_msg_data_kvec_init);
 
+void ceph_msg_data_nested_cursor_init(struct ceph_msg_data *data,
+				      struct ceph_msg_data_cursor *cursor)
+{
+	data->type = CEPH_MSG_DATA_CURSOR;
+	/* Take a copy, we are not allowed to change the original cursor */
+	data->cursor = *cursor;
+}
+EXPORT_SYMBOL(ceph_msg_data_nested_cursor_init);
+
 size_t ceph_msg_data_length(struct ceph_msg_data *data)
 {
 	switch (data->type) {
@@ -3920,6 +3977,8 @@ size_t ceph_msg_data_length(struct ceph_msg_data *data)
 		return data->bvec_pos.iter.bi_size;
 	case CEPH_MSG_DATA_KVEC:
 		return data->kvec->length;
+	case CEPH_MSG_DATA_CURSOR:
+		return data->cursor.total_resid;
 	default:
 		WARN(true, "unrecognized data type %d\n", (int)data->type);
 		return 0;
@@ -3951,6 +4010,8 @@ void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *data)
 					data->own_bvecs);
 	} else if (data->type == CEPH_MSG_DATA_KVEC) {
 		ceph_msg_data_add_kvec(msg, data->kvec);
+	} else if (data->type == CEPH_MSG_DATA_CURSOR) {
+		ceph_msg_data_add_nested_cursor(msg, &data->cursor);
 	} else {
 		BUG_ON(data->type != CEPH_MSG_DATA_NONE);
 	}
@@ -4027,6 +4088,18 @@ void ceph_msg_data_add_kvec(struct ceph_msg *msg, struct ceph_kvec *kvec)
 	msg->data_length += kvec->length;
 }
 EXPORT_SYMBOL(ceph_msg_data_add_kvecs);
+
+void ceph_msg_data_add_nested_cursor(struct ceph_msg *msg,
+				     struct ceph_msg_data_cursor *cursor)
+{
+	struct ceph_msg_data *data;
+
+	data = ceph_msg_data_get_next(msg);
+	ceph_msg_data_nested_cursor_init(data, cursor);
+
+	msg->data_length += cursor->total_resid;
+}
+EXPORT_SYMBOL(ceph_msg_data_add_nested_cursor);
 
 /*
  * construct a new message with given type, size

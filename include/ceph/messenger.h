@@ -103,6 +103,7 @@ enum ceph_msg_data_type {
 #endif /* CONFIG_BLOCK */
 	CEPH_MSG_DATA_BVECS,	/* data source/destination is a bio_vec array */
 	CEPH_MSG_DATA_KVEC,     /* data src/dst is a kvec with release func */
+	CEPH_MSG_DATA_CURSOR,   /* nested cursor inside data */
 };
 
 #ifdef CONFIG_BLOCK
@@ -194,6 +195,29 @@ struct ceph_kvec {
 	(it)->iter.bi_size = (n);					      \
 } while (0)
 
+struct ceph_msg_data_cursor {
+	size_t			total_resid;	/* across all data items */
+
+	struct ceph_msg_data	*data;		/* current data item */
+	struct iov_iter         iter;           /* iterator for current data */
+	struct bio_vec          tmp_bvec;       /* will be removed ASAP */
+	unsigned int            direction;      /* data direction */
+	size_t			resid;		/* bytes not yet consumed */
+	union {
+#ifdef CONFIG_BLOCK
+		struct ceph_bio_iter	bio_iter;
+#endif /* CONFIG_BLOCK */
+		struct bvec_iter	bvec_iter;
+		struct {				/* pages */
+			unsigned short	page_index;	/* index in array */
+			unsigned short	page_count;	/* pages in array */
+		};
+		struct {				/* pagelist */
+			struct page	*page;		/* page from list */
+		};
+	};
+};
+
 struct ceph_msg_data {
 	enum ceph_msg_data_type		type;
 	union {
@@ -217,29 +241,8 @@ struct ceph_msg_data {
 		};
 		struct ceph_pagelist	*pagelist;
 		struct ceph_kvec        *kvec;
-	};
-};
-
-struct ceph_msg_data_cursor {
-	size_t			total_resid;	/* across all data items */
-
-	struct ceph_msg_data	*data;		/* current data item */
-	struct iov_iter         iter;           /* iterator for current data */
-	struct bio_vec          tmp_bvec;       /* will be removed ASAP */
-	unsigned int            direction;      /* data direction */
-	size_t			resid;		/* bytes not yet consumed */
-	union {
-#ifdef CONFIG_BLOCK
-		struct ceph_bio_iter	bio_iter;
-#endif /* CONFIG_BLOCK */
-		struct bvec_iter	bvec_iter;
-		struct {				/* pages */
-			unsigned short	page_index;	/* index in array */
-			unsigned short	page_count;	/* pages in array */
-		};
-		struct {				/* pagelist */
-			struct page	*page;		/* page from list */
-		};
+		struct ceph_msg_data_cursor
+					cursor;        /* nested cursor */
 	};
 };
 
@@ -436,6 +439,8 @@ void ceph_msg_data_bvecs_init(struct ceph_msg_data *data,
 			      u32 num_bvecs, bool own_bvecs);
 void ceph_msg_data_kvec_init(struct ceph_msg_data *data,
 			     struct ceph_kvec *kvec);
+void ceph_msg_data_nested_cursor_init(struct ceph_msg_data *data,
+				      struct ceph_msg_data_cursor *cursor);
 void ceph_msg_data_add(struct ceph_msg *msg, struct ceph_msg_data *data);
 
 void ceph_msg_data_add_pages(struct ceph_msg *msg, struct page **pages,
@@ -451,6 +456,8 @@ void ceph_msg_data_add_bvecs(struct ceph_msg *msg,
 			     struct ceph_bvec_iter *bvec_pos,
 			     unsigned int num_bvec, bool own_bvec);
 void ceph_msg_data_add_kvec(struct ceph_msg *msg, struct ceph_kvec *kvec);
+void ceph_msg_data_add_nested_cursor(struct ceph_msg *msg,
+				     struct ceph_msg_data_cursor *cursor);
 
 void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
 			       struct ceph_msg_data *data,
