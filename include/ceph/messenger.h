@@ -162,6 +162,7 @@ struct ceph_kvec {
 	void (*release)(struct ceph_kvec *);
 	unsigned long length;
 	unsigned long nr_segs;
+	int           refs;
 };
 
 #define __ceph_bvec_iter_advance_step(it, n, STEP) do {			      \
@@ -534,6 +535,9 @@ extern struct ceph_msg *ceph_msg_new(int type, int front_len, gfp_t flags,
 
 extern struct ceph_msg *ceph_msg_get(struct ceph_msg *msg);
 extern void ceph_msg_put(struct ceph_msg *msg);
+
+extern void ceph_kvec_get(struct ceph_kvec *kvec);
+extern void ceph_kvec_put(struct ceph_kvec *kvec);
 
 extern void ceph_msg_dump(struct ceph_msg *msg);
 

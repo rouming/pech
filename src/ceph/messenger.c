@@ -3861,10 +3861,20 @@ static void ceph_bvecs_release(struct ceph_bvec_iter *bvec_pos,
 	bvec_pos->bvecs = NULL;
 }
 
-static void ceph_kvec_release(struct ceph_kvec *kvec)
+void ceph_kvec_get(struct ceph_kvec *kvec)
 {
-	kvec->release(kvec);
+	WARN_ON(!kvec->refs);
+	kvec->refs++;
 }
+EXPORT_SYMBOL(ceph_kvec_put);
+
+void ceph_kvec_put(struct ceph_kvec *kvec)
+{
+	WARN_ON(!kvec->refs);
+	if (!--kvec->refs)
+		kvec->release(kvec);
+}
+EXPORT_SYMBOL(ceph_kvec_put);
 
 void ceph_msg_data_init(struct ceph_msg_data *data)
 {
@@ -3883,7 +3893,7 @@ void ceph_msg_data_release(struct ceph_msg_data *data)
 	} else if (data->type == CEPH_MSG_DATA_BVECS && data->own_bvecs) {
 		ceph_bvecs_release(&data->bvec_pos, data->num_bvecs);
 	} else if (data->type == CEPH_MSG_DATA_KVEC) {
-		ceph_kvec_release(data->kvec);
+		ceph_kvec_put(data->kvec);
 	} else if (data->type == CEPH_MSG_DATA_CURSOR) {
 		/* Noop */
 	} else {

@@ -1197,6 +1197,7 @@ alloc_msg_data_kvec(struct ceph_msg_data *data)
 	vec_data->vec.release = ceph_msg_data_kvec_release;
 	vec_data->vec.length  = ceph_msg_data_length(data);
 	vec_data->vec.nr_segs = nr_segs;
+	vec_data->vec.refs    = 1;
 
 	if (data->type == CEPH_MSG_DATA_BVECS) {
 		for (i = 0; i < nr_segs; i++) {
