@@ -818,8 +818,6 @@ static int handle_osd_op_write(struct ceph_msg *msg,
 				goto out;
 		}
 
-		ceph_msg_data_cursor_next(in_cur);
-
 		len = iov_iter_count(&in_cur->iter);
 		len = min(len, dst_len);
 		len = min(len, len_write);
@@ -1310,7 +1308,6 @@ static int handle_osd_op_call(struct ceph_msg *msg,
 	    op->cls.indata_len > msg->data_length)
 		return -EINVAL;
 
-	ceph_msg_data_cursor_next(in_cur);
 	BUG_ON(in_cur->iter.nr_segs != 1);
 
 	if (iter_is_iovec(&in_cur->iter))

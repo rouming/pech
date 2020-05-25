@@ -452,7 +452,6 @@ void ceph_msg_data_add_kvec(struct ceph_msg *msg, struct ceph_kvec *kvec);
 void ceph_msg_data_cursor_init(struct ceph_msg_data_cursor *cursor,
 			       struct ceph_msg_data *data,
 			       unsigned int dir, size_t length);
-void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor);
 void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 				  size_t bytes);
 int ceph_msg_data_cursor_copy(struct ceph_msg_data_cursor *cursor,

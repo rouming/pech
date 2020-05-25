@@ -942,11 +942,6 @@ static void ceph_msg_data_bio_cursor_init(struct ceph_msg_data_cursor *cursor,
 	set_bio_iter_to_iov_iter(cursor);
 }
 
-static void ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor)
-{
-	/* Nothing here */
-}
-
 static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 				      size_t bytes)
 {
@@ -982,11 +977,6 @@ static void ceph_msg_data_bvecs_cursor_init(struct ceph_msg_data_cursor *cursor,
 
 	iov_iter_bvec(&cursor->iter, cursor->direction, data->bvec_pos.bvecs,
 		      data->num_bvecs, cursor->resid);
-}
-
-static void ceph_msg_data_bvecs_next(struct ceph_msg_data_cursor *cursor)
-{
-	/* Nothing here */
 }
 
 static void ceph_msg_data_iov_iter_advance(struct ceph_msg_data_cursor *cursor,
@@ -1026,11 +1016,6 @@ static void ceph_msg_data_kvec_cursor_init(struct ceph_msg_data_cursor *cursor,
 		      data->kvec->nr_segs, cursor->resid);
 }
 
-static void ceph_msg_data_kvec_next(struct ceph_msg_data_cursor *cursor)
-{
-	/* Nothing here */
-}
-
 static void ceph_msg_data_kvec_advance(struct ceph_msg_data_cursor *cursor,
 				       size_t bytes)
 {
@@ -1064,11 +1049,6 @@ static void ceph_msg_data_pages_cursor_init(struct ceph_msg_data_cursor *cursor,
 	ceph_msg_data_set_iter(cursor, data->pages[cursor->page_index],
 			       page_offset, min(PAGE_SIZE - page_offset,
 						cursor->resid));
-}
-
-static void ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor)
-{
-	/* Nothing here */
 }
 
 static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
@@ -1121,11 +1101,6 @@ ceph_msg_data_pagelist_cursor_init(struct ceph_msg_data_cursor *cursor,
 	cursor->page = page;
 
 	ceph_msg_data_set_iter(cursor, page, 0, min(PAGE_SIZE, cursor->resid));
-}
-
-static void ceph_msg_data_pagelist_next(struct ceph_msg_data_cursor *cursor)
-{
-	/* Nothing here */
 }
 
 static void ceph_msg_data_pagelist_advance(struct ceph_msg_data_cursor *cursor,
@@ -1214,37 +1189,6 @@ static void ceph_msg_cursor_init(unsigned int dir, struct ceph_msg *msg,
 	ceph_msg_data_cursor_init(cursor, msg->data, dir, length);
 }
 
-/*
- * Setups cursor->iter for the next piece to process.
- */
-void ceph_msg_data_cursor_next(struct ceph_msg_data_cursor *cursor)
-{
-	switch (cursor->data->type) {
-	case CEPH_MSG_DATA_PAGELIST:
-		ceph_msg_data_pagelist_next(cursor);
-		break;
-	case CEPH_MSG_DATA_PAGES:
-		ceph_msg_data_pages_next(cursor);
-		break;
-#ifdef CONFIG_BLOCK
-	case CEPH_MSG_DATA_BIO:
-		ceph_msg_data_bio_next(cursor);
-		break;
-#endif /* CONFIG_BLOCK */
-	case CEPH_MSG_DATA_BVECS:
-		ceph_msg_data_bvecs_next(cursor);
-		break;
-	case CEPH_MSG_DATA_KVEC:
-		ceph_msg_data_kvec_next(cursor);
-		break;
-	case CEPH_MSG_DATA_NONE:
-	default:
-		BUG();
-		break;
-	}
-}
-EXPORT_SYMBOL(ceph_msg_data_cursor_next);
-
 void ceph_msg_data_cursor_advance(struct ceph_msg_data_cursor *cursor,
 				  size_t bytes)
 {
@@ -1291,8 +1235,6 @@ int ceph_msg_data_cursor_copy(struct ceph_msg_data_cursor *cursor,
 
 	while (length) {
 		size_t len, len2;
-
-		ceph_msg_data_cursor_next(cursor);
 
 		len = iov_iter_count(&cursor->iter);
 		len = min(len, length);
@@ -1783,7 +1725,6 @@ static int write_partial_message_data(struct ceph_connection *con)
 			continue;
 		}
 
-		ceph_msg_data_cursor_next(cursor);
 		if (iov_iter_count(&cursor->iter) == cursor->total_resid)
 			more = MSG_MORE;
 		ret = ceph_tcp_sendiov(con->sock, &cursor->iter, more);
@@ -2670,7 +2611,6 @@ static int read_partial_msg_data(struct ceph_connection *con)
 			continue;
 		}
 
-		ceph_msg_data_cursor_next(cursor);
 		ret = ceph_tcp_recviov(con->sock, &cursor->iter);
 		if (ret <= 0) {
 			if (do_datacrc)
