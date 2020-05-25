@@ -1045,6 +1045,7 @@ static void ceph_msg_data_pages_cursor_init(struct ceph_msg_data_cursor *cursor,
 					size_t length)
 {
 	struct ceph_msg_data *data = cursor->data;
+	unsigned int page_offset;
 	int page_count;
 
 	BUG_ON(data->type != CEPH_MSG_DATA_PAGES);
@@ -1054,26 +1055,20 @@ static void ceph_msg_data_pages_cursor_init(struct ceph_msg_data_cursor *cursor,
 
 	cursor->resid = min(length, data->length);
 	page_count = calc_pages_for(data->alignment, (u64)data->length);
-	cursor->page_offset = data->alignment & ~PAGE_MASK;
+	page_offset = data->alignment & ~PAGE_MASK;
 	cursor->page_index = 0;
 	BUG_ON(page_count > (int)USHRT_MAX);
 	cursor->page_count = (unsigned short)page_count;
-	BUG_ON(length > SIZE_MAX - cursor->page_offset);
+	BUG_ON(length > SIZE_MAX - page_offset);
+
+	ceph_msg_data_set_iter(cursor, data->pages[cursor->page_index],
+			       page_offset, min(PAGE_SIZE - page_offset,
+						cursor->resid));
 }
 
 static void ceph_msg_data_pages_next(struct ceph_msg_data_cursor *cursor)
 {
-	struct ceph_msg_data *data = cursor->data;
-
-	BUG_ON(data->type != CEPH_MSG_DATA_PAGES);
-
-	BUG_ON(cursor->page_index >= cursor->page_count);
-	BUG_ON(cursor->page_offset >= PAGE_SIZE);
-
-	ceph_msg_data_set_iter(cursor, data->pages[cursor->page_index],
-			       cursor->page_offset,
-			       min(PAGE_SIZE - cursor->page_offset,
-				   cursor->resid));
+	/* Nothing here */
 }
 
 static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
@@ -1081,13 +1076,10 @@ static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
 {
 	BUG_ON(cursor->data->type != CEPH_MSG_DATA_PAGES);
 
-	BUG_ON(cursor->page_offset + bytes > PAGE_SIZE);
-
-	/* Advance the cursor page offset */
-
+	/* Advance the cursor iter */
 	cursor->resid -= bytes;
-	cursor->page_offset = (cursor->page_offset + bytes) & ~PAGE_MASK;
-	if (!bytes || cursor->page_offset)
+	iov_iter_advance(&cursor->iter, bytes);
+	if (!bytes || iov_iter_count(&cursor->iter))
 		return;	/* more bytes to process in the current page */
 
 	if (!cursor->resid)
@@ -1097,6 +1089,9 @@ static void ceph_msg_data_pages_advance(struct ceph_msg_data_cursor *cursor,
 
 	BUG_ON(cursor->page_index >= cursor->page_count);
 	cursor->page_index++;
+
+	ceph_msg_data_set_iter(cursor, cursor->data->pages[cursor->page_index],
+			       0, min(PAGE_SIZE, cursor->resid));
 }
 
 /*

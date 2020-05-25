@@ -233,7 +233,6 @@ struct ceph_msg_data_cursor {
 #endif /* CONFIG_BLOCK */
 		struct bvec_iter	bvec_iter;
 		struct {				/* pages */
-			unsigned int	page_offset;	/* offset in page */
 			unsigned short	page_index;	/* index in array */
 			unsigned short	page_count;	/* pages in array */
 		};
