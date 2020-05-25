@@ -906,6 +906,22 @@ static void ceph_msg_data_set_iter(struct ceph_msg_data_cursor *cursor,
 
 #ifdef CONFIG_BLOCK
 
+static void set_bio_iter_to_iov_iter(struct ceph_msg_data_cursor *cursor)
+{
+	struct ceph_bio_iter *it = &cursor->bio_iter;
+
+	iov_iter_bvec(&cursor->iter, cursor->direction,
+		      it->bio->bi_io_vec + it->iter.bi_idx,
+		      it->bio->bi_vcnt - it->iter.bi_idx,
+		      it->iter.bi_size);
+	/*
+	 * Careful here: use multipage offset, because we need an offset
+	 * in the whole bvec, not in a page
+	 */
+	cursor->iter.iov_offset =
+		mp_bvec_iter_offset(cursor->iter.bvec, it->iter);
+}
+
 /*
  * For a bio data item, a piece is whatever remains of the next
  * entry in the current bio iovec, or the first entry in the next
@@ -923,15 +939,12 @@ static void ceph_msg_data_bio_cursor_init(struct ceph_msg_data_cursor *cursor,
 		it->iter.bi_size = cursor->resid;
 
 	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
+	set_bio_iter_to_iov_iter(cursor);
 }
 
 static void ceph_msg_data_bio_next(struct ceph_msg_data_cursor *cursor)
 {
-	struct bio_vec bv = bio_iter_iovec(cursor->bio_iter.bio,
-					   cursor->bio_iter.iter);
-
-	ceph_msg_data_set_iter(cursor, bv.bv_page,
-			       bv.bv_offset, bv.bv_len);
+	/* Nothing here */
 }
 
 static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
@@ -940,21 +953,23 @@ static void ceph_msg_data_bio_advance(struct ceph_msg_data_cursor *cursor,
 	struct ceph_bio_iter *it = &cursor->bio_iter;
 
 	BUG_ON(bytes > cursor->resid);
-	BUG_ON(bytes > bio_iter_len(it->bio, it->iter));
+	BUG_ON(bytes > iov_iter_count(&cursor->iter));
 	cursor->resid -= bytes;
-	bio_advance_iter(it->bio, &it->iter, bytes);
+	iov_iter_advance(&cursor->iter, bytes);
 
 	if (!bytes || !cursor->resid)
 		return;   /* no more data */
 
-	if (!it->iter.bi_size) {
+	if (!iov_iter_count(&cursor->iter)) {
 		it->bio = it->bio->bi_next;
 		it->iter = it->bio->bi_iter;
 		if (cursor->resid < it->iter.bi_size)
 			it->iter.bi_size = cursor->resid;
+
+		set_bio_iter_to_iov_iter(cursor);
 	}
 
-	BUG_ON(cursor->resid < bio_iter_len(it->bio, it->iter));
+	BUG_ON(cursor->resid != iov_iter_count(&cursor->iter));
 }
 #endif /* CONFIG_BLOCK */
 
