@@ -238,7 +238,6 @@ struct ceph_msg_data_cursor {
 		};
 		struct {				/* pagelist */
 			struct page	*page;		/* page from list */
-			size_t		offset;		/* bytes from list */
 		};
 	};
 };
