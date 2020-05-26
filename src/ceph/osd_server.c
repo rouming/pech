@@ -52,6 +52,11 @@ struct ceph_osds_msg {
 	struct ceph_msg        msg;  /* should be the first in the struct */
 	struct work_struct     work;
 	struct ceph_msg_osd_op req;
+
+	struct ceph_osd_req_op *ops_arr[CEPH_OSD_MAX_OPS]; /* additional ops */
+	struct ceph_osd_req_op **ops;
+	int                    max_ops;
+	int                    nr_ops;
 };
 
 struct ceph_osds_con {
@@ -146,6 +151,50 @@ static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 	};
 
 	return 0;
+}
+
+static struct ceph_osd_req_op *alloc_osd_req_op(struct ceph_osds_msg *m)
+{
+	struct ceph_osd_req_op *op;
+
+	if (unlikely(m->nr_ops == m->max_ops)) {
+		struct ceph_osd_req_op **ops;
+		int sz = m->max_ops << 1;
+		bool fixed_arr;
+
+		fixed_arr = (m->ops == m->ops_arr);
+		ops = (fixed_arr ? NULL : m->ops);
+		ops = krealloc(ops, sz * sizeof(*ops), GFP_KERNEL);
+		if (!ops)
+			return NULL;
+
+		if (unlikely(fixed_arr))
+			memcpy(ops, m->ops_arr, sizeof(m->ops_arr));
+
+		m->ops = ops;
+		m->max_ops = sz;
+	}
+
+	op = kmalloc(sizeof(*op), GFP_KERNEL);
+	if (unlikely(!op))
+		return NULL;
+
+	m->ops[m->nr_ops++] = op;
+
+	return op;
+}
+
+static void free_osd_req_ops(struct ceph_osds_msg *m)
+{
+	struct ceph_osd_req_op *op;
+	int i;
+
+	for (i = 0; i < m->nr_ops; i++) {
+		op = m->ops[i];
+		kfree(op);
+	}
+	if (m->ops != m->ops_arr)
+		kfree(m->ops);
 }
 
 static struct ceph_osds_object *
@@ -1241,17 +1290,21 @@ static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
 	struct osds_cls_call_ctx *osds_ctx;
 	struct ceph_msg_data_cursor in_cur;
 	struct ceph_msg_data in_data;
-	struct ceph_osd_req_op op;
+	struct ceph_osd_req_op *op;
 	int ret;
 
 	osds_ctx = container_of(ctx, typeof(*osds_ctx), ctx);
 
+	op = alloc_osd_req_op(osds_ctx->m);
+	if (!op)
+		return -ENOMEM;
+
 	/* Fill in osd request op */
-	ret = osd_op_to_req_op(raw_op, &op);
+	ret = osd_op_to_req_op(raw_op, op);
 	if (ret)
 		return ret;
 
-	if (WARN_ON(op.op == CEPH_OSD_OP_CALL))
+	if (WARN_ON(op->op == CEPH_OSD_OP_CALL))
 		/* Avoid recursion */
 		return -EINVAL;
 
@@ -1261,16 +1314,16 @@ static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
 	/* Init iterator for input data */
 	ceph_msg_data_cursor_init(&in_cur, &in_data, WRITE, in->length);
 
-	ret = handle_osd_op(osds_ctx->m, &op, &in_cur);
+	ret = handle_osd_op(osds_ctx->m, op, &in_cur);
 	if (ret)
 		return ret;
 
-	if (op.outdata) {
+	if (op->outdata) {
 		struct ceph_msg_data_kvec *vec_data;
 
-		vec_data = alloc_msg_data_kvec(op.outdata);
+		vec_data = alloc_msg_data_kvec(op->outdata);
 		if (!vec_data) {
-			ceph_msg_data_release(op.outdata);
+			ceph_msg_data_release(op->outdata);
 			return -ENOMEM;
 		}
 		*out = &vec_data->vec;
@@ -2116,6 +2169,15 @@ static void osds_dispatch_workfn(struct work_struct *work)
 	ceph_msg_put(msg);
 }
 
+static void init_osds_msg(struct ceph_osds_msg *m)
+{
+	INIT_WORK(&m->work, osds_dispatch_workfn);
+	init_msg_osd_op(&m->req);
+	m->ops = m->ops_arr;
+	m->max_ops = ARRAY_SIZE(m->ops_arr);
+	m->nr_ops = 0;
+}
+
 static struct ceph_msg *alloc_msg_with_bvec(struct ceph_osd_server *osds,
 					    struct ceph_msg_header *hdr)
 {
@@ -2133,8 +2195,7 @@ static struct ceph_msg *alloc_msg_with_bvec(struct ceph_osd_server *osds,
 	/* Message itself starts at the beginning of the struct */
 	BUILD_BUG_ON(offsetof(typeof(*osds_msg), msg) != 0);
 	osds_msg = container_of(m, typeof(*osds_msg), msg);
-	INIT_WORK(&osds_msg->work, osds_dispatch_workfn);
-	init_msg_osd_op(&osds_msg->req);
+	init_osds_msg(osds_msg);
 
 	if (data_len) {
 		struct ceph_bvec_iter it;
@@ -2187,6 +2248,7 @@ static void osds_free_msg(struct ceph_msg *msg)
 	osds_msg = container_of(msg, typeof(*osds_msg), msg);
 
 	deinit_msg_osd_op(&osds_msg->req);
+	free_osd_req_ops(osds_msg);
 }
 
 static void osds_fault(struct ceph_connection *con)

@@ -12,6 +12,7 @@
 #define kzalloc(size, gfp) calloc(1, size)
 #define kmalloc_array(n, size, flags) malloc(n * size)
 #define kcalloc(n, size, flags) calloc(n, size)
+#define krealloc(ptr, size, flags) realloc(ptr, size)
 #define kfree(ptr) free(ptr)
 
 #define kstrndup(s, len, flags) strndup(s, len)
