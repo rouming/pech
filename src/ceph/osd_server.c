@@ -17,6 +17,8 @@
 #include "ceph/decode.h"
 #include "ceph/auth.h"
 #include "ceph/osdmap.h"
+#include "ceph/transaction.h"
+#include "ceph/memstore.h"
 #include "ceph/objclass/class_loader.h"
 
 enum {
@@ -50,6 +52,7 @@ struct ceph_msg_osd_op {
 
 struct ceph_osds_pg {
 	struct rb_node         node;     /* node of ->pgs */
+	struct ceph_store_coll *coll;
 	struct ceph_spg        spg;
 	struct rb_root         objects;  /* all objects */
 	struct rb_root         objs_info;/* all objects info structures */
@@ -68,6 +71,8 @@ struct ceph_osds_msg {
 	struct ceph_osds_pg    *pg;
 	struct ceph_osds_obj_info
 			       *obj_info;
+
+	struct ceph_transaction txn;
 
 	struct ceph_osd_req_op *ops_arr[CEPH_OSD_MAX_OPS]; /* additional ops */
 	struct ceph_osd_req_op **ops;
@@ -310,6 +315,7 @@ static int ceph_get_or_create_pg(struct ceph_connection *con,
 	struct ceph_osd_client *osdc = con_to_osdc(con);
 	struct ceph_osd_server *osds = con_to_osds(con);
 	unsigned long _1s = msecs_to_jiffies(1000);
+	struct ceph_store_coll *coll;
 	struct ceph_osds_pg *pg;
 
 	int ret;
@@ -326,6 +332,35 @@ static int ceph_get_or_create_pg(struct ceph_connection *con,
 	if (likely(pg))
 		goto out;
 
+	coll = ceph_store_open_collection(osds->store, &m->req.spg);
+	if (unlikely(IS_ERR(coll))) {
+		struct ceph_transaction txn;
+
+		coll = ceph_store_create_collection(osds->store, &m->req.spg);
+		if (unlikely(IS_ERR(coll)))
+			return PTR_ERR(coll);
+
+		ceph_transaction_init(&txn);
+
+		ret = ceph_transaction_mkcoll(&txn, &m->req.spg);
+		if (unlikely(ret))
+			goto deinit_txn;
+
+		/*
+		 * Execute transaction immediately. Do not replicate it,
+		 * each replica takes the same path.
+		 */
+
+		ret = ceph_store_execute_transaction(osds->store, &txn);
+		if (unlikely(ret))
+			goto deinit_txn;
+
+deinit_txn:
+		ceph_transaction_deinit(&txn);
+		if (unlikely(ret))
+			return ret;
+	}
+
 	pg = kzalloc(sizeof(*pg), GFP_KERNEL);
 	if (unlikely(!pg))
 		return -ENOMEM;
@@ -336,6 +371,7 @@ static int ceph_get_or_create_pg(struct ceph_connection *con,
 	pg->objs_info = RB_ROOT;
 	RB_CLEAR_NODE(&pg->node);
 	pg->spg = m->req.spg;
+	pg->coll = coll;
 	insert_pg(&osds->pgs, pg);
 
 out:
@@ -351,7 +387,6 @@ static void ceph_get_obj_info(struct ceph_osds_msg *m)
 	m->obj_info = lookup_obj_info(&pg->objs_info, &m->req.hoid);
 };
 
-__attribute__((unused))
 static int ceph_recreate_obj_info(struct ceph_osds_msg *m)
 {
 	struct ceph_osds_obj_info *obj_info = m->obj_info;
@@ -378,6 +413,14 @@ static int ceph_recreate_obj_info(struct ceph_osds_msg *m)
 cache_obj_info:
 	m->obj_info = obj_info;
 mark_as_existing:
+	if (!obj_info->exists) {
+		int ret;
+
+		ret = ceph_transaction_touch(&m->txn, &m->req.spg,
+					     &m->req.hoid);
+		if (unlikely(ret))
+			return ret;
+	}
 	obj_info->exists = true;
 
 	return 0;
@@ -930,6 +973,20 @@ static inline int next_dst(struct ceph_osd_req_op *op,
 static int handle_osd_op_write(struct ceph_osds_msg *m,
 			       struct ceph_osd_req_op *op)
 {
+	int ret;
+
+	ret = ceph_recreate_obj_info(m);
+	if (unlikely(ret))
+		return ret;
+
+	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
+				&m->req.hoid, &m->req.mtime, op);
+}
+
+__attribute__((unused))
+static int handle_osd_op_write_REMOVE_ASAP(struct ceph_osds_msg *m,
+			       struct ceph_osd_req_op *op)
+{
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
@@ -1038,6 +1095,7 @@ static struct ceph_osds_block *lookup_block_ge(struct ceph_osds_object *obj,
 	return right;
 }
 
+__attribute__((unused))
 static int handle_osd_op_read(struct ceph_osds_msg *m,
 			      struct ceph_osd_req_op *op)
 {
@@ -1143,6 +1201,7 @@ static int handle_osd_op_read(struct ceph_osds_msg *m,
 	return 0;
 }
 
+__attribute__((unused))
 static int handle_osd_op_stat(struct ceph_osds_msg *m,
 			      struct ceph_osd_req_op *op)
 {
@@ -1587,6 +1646,7 @@ static int ceph_encode_omap_entry(struct ceph_pagelist *pl,
 	return ret;
 }
 
+__attribute__((unused))
 static int handle_osd_op_omapgetvals(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
@@ -1701,6 +1761,7 @@ enomem:
 	goto err;
 }
 
+__attribute__((unused))
 static int handle_osd_op_omapgetvalsbykeys(struct ceph_osds_msg *m,
 					   struct ceph_osd_req_op *op)
 {
@@ -1785,6 +1846,20 @@ enomem:
 static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
+	int ret;
+
+	ret = ceph_recreate_obj_info(m);
+	if (unlikely(ret))
+		return ret;
+
+	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
+				&m->req.hoid, &m->req.mtime, op);
+}
+
+__attribute__((unused))
+static int handle_osd_op_omapsetvals__REMOVE_ASAP(struct ceph_osds_msg *m,
+				     struct ceph_osd_req_op *op)
+{
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	int ret;
@@ -1853,6 +1928,7 @@ enomem:
 	goto err;
 }
 
+__attribute__((unused))
 static int handle_osd_op_omapgetkeys(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
@@ -1951,6 +2027,7 @@ enomem:
 	goto err;
 }
 
+__attribute__((unused))
 static int handle_osd_op_getxattr(struct ceph_osds_msg *m,
 				  struct ceph_osd_req_op *op)
 {
@@ -2015,6 +2092,20 @@ enodata:
 }
 
 static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
+				  struct ceph_osd_req_op *op)
+{
+	int ret;
+
+	ret = ceph_recreate_obj_info(m);
+	if (unlikely(ret))
+		return ret;
+
+	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
+				&m->req.hoid, &m->req.mtime, op);
+}
+
+__attribute__((unused))
+static int handle_osd_op_setxattr__REMOVE_ASAP(struct ceph_osds_msg *m,
 				  struct ceph_osd_req_op *op)
 {
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
@@ -2087,6 +2178,17 @@ enomem:
 static int handle_osd_op_create(struct ceph_osds_msg *m,
 				struct ceph_osd_req_op *op)
 {
+	if (m->obj_info && m->obj_info->exists &&
+	    (op->flags & CEPH_OSD_OP_FLAG_EXCL))
+		return -EEXIST;
+
+	return ceph_recreate_obj_info(m);
+}
+
+__attribute__((unused))
+static int handle_osd_op_create__REMOVE_ASAP(struct ceph_osds_msg *m,
+				struct ceph_osd_req_op *op)
+{
 	struct ceph_osds_object *obj;
 
 	obj = ceph_lookup_object(m->pg, &m->req);
@@ -2103,44 +2205,46 @@ static int handle_osd_op_create(struct ceph_osds_msg *m,
 static int handle_osd_op(struct ceph_osds_msg *m,
 			 struct ceph_osd_req_op *op)
 {
+	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	int ret;
 
 	switch (op->op) {
+
+	/* Mutation ops, through transaction */
+
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
 		ret = handle_osd_op_write(m, op);
 		break;
-	case CEPH_OSD_OP_READ:
-	case CEPH_OSD_OP_SYNC_READ:
-	case CEPH_OSD_OP_SPARSE_READ:
-		ret = handle_osd_op_read(m, op);
-		break;
-	case CEPH_OSD_OP_STAT:
-		ret = handle_osd_op_stat(m, op);
-		break;
-	case CEPH_OSD_OP_CALL:
-		ret = handle_osd_op_call(m, op);
-		break;
-	case CEPH_OSD_OP_OMAPGETVALS:
-		ret = handle_osd_op_omapgetvals(m, op);
-		break;
-	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
-		ret = handle_osd_op_omapgetvalsbykeys(m, op);
-		break;
 	case CEPH_OSD_OP_OMAPSETVALS:
 		ret = handle_osd_op_omapsetvals(m, op);
-		break;
-	case CEPH_OSD_OP_OMAPGETKEYS:
-		ret = handle_osd_op_omapgetkeys(m, op);
-		break;
-	case CEPH_OSD_OP_GETXATTR:
-		ret = handle_osd_op_getxattr(m, op);
 		break;
 	case CEPH_OSD_OP_SETXATTR:
 		ret = handle_osd_op_setxattr(m, op);
 		break;
 	case CEPH_OSD_OP_CREATE:
 		ret = handle_osd_op_create(m, op);
+		break;
+
+	/* Read ops, immediate execution */
+
+	case CEPH_OSD_OP_STAT:
+	case CEPH_OSD_OP_READ:
+	case CEPH_OSD_OP_SYNC_READ:
+	case CEPH_OSD_OP_SPARSE_READ:
+	case CEPH_OSD_OP_STAT:
+	case CEPH_OSD_OP_OMAPGETVALS:
+	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
+	case CEPH_OSD_OP_OMAPGETKEYS:
+	case CEPH_OSD_OP_GETXATTR:
+		ret = ceph_store_execute_ro_osd_op(osds->store, m->pg->coll,
+						   &m->req.hoid, op);
+		break;
+
+	/* Other ops */
+
+	case CEPH_OSD_OP_CALL:
+		ret = handle_osd_op_call(m, op);
 		break;
 	case CEPH_OSD_OP_WATCH:
 	case CEPH_OSD_OP_LIST_WATCHERS:
@@ -2166,6 +2270,7 @@ static int handle_osd_op(struct ceph_osds_msg *m,
 static void handle_osd_ops(struct ceph_connection *con,
 			   struct ceph_osds_msg *m)
 {
+	struct ceph_osd_server *osds = con_to_osds(con);
 	struct ceph_osd_client *osdc = con_to_osdc(con);
 	struct ceph_msg_data_cursor in_cur;
 	struct ceph_msg *reply;
@@ -2213,6 +2318,9 @@ static void handle_osd_ops(struct ceph_connection *con,
 		if (op->indata_len)
 			ceph_msg_data_cursor_advance(&in_cur, op->indata_len);
 	}
+
+	/* Execute accumulated ops in one transaction */
+	ceph_store_execute_transaction(osds->store, &m->txn);
 
 send_reply:
 	/* Create reply message */
@@ -2266,6 +2374,7 @@ static void init_osds_msg(struct ceph_osds_msg *m)
 {
 	INIT_WORK(&m->work, osds_dispatch_workfn);
 	init_msg_osd_op(&m->req);
+	ceph_transaction_init(&m->txn);
 	m->ops = m->ops_arr;
 	m->max_ops = ARRAY_SIZE(m->ops_arr);
 	m->nr_ops = 0;
@@ -2340,6 +2449,7 @@ static void osds_free_msg(struct ceph_msg *msg)
 	BUILD_BUG_ON(offsetof(typeof(*osds_msg), msg) != 0);
 	osds_msg = container_of(msg, typeof(*osds_msg), msg);
 
+	ceph_transaction_deinit(&osds_msg->txn);
 	deinit_msg_osd_op(&osds_msg->req);
 	free_osd_req_ops(osds_msg);
 }
@@ -2493,6 +2603,7 @@ void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 	ceph_stop_osd_server(osds);
 	flush_workqueue(osds->dispatch_wq);
 	ceph_destroy_client(osds->client);
+	ceph_store_destroy(osds->store);
 	destroy_pgs(osds);
 	ceph_cls_deinit(&osds->class_loader);
 	destroy_workqueue(osds->dispatch_wq);
@@ -2525,15 +2636,22 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 		goto free_cache;
 	}
 
+	/* Allocate store */
+	osds->store = ceph_memstore_create(client->options);
+	if (unlikely(IS_ERR(osds->store))) {
+		ret = PTR_ERR(osds->store);
+		goto free_cache;
+	}
+
 	ret = ceph_open_session(client);
 	if (unlikely(ret))
-		goto destroy_wq;
+		goto destroy_store;
 
 	pr_notice(">>>> Ceph session opened\n");
 
 	ret = ceph_messenger_start_listen(&client->msgr, &osds_con_ops);
 	if (unlikely(ret))
-		goto err;
+		goto destroy_wq;
 
 	pr_notice(">>>> Start listening\n");
 
@@ -2578,6 +2696,8 @@ err:
 	ceph_messenger_stop_listen(&client->msgr);
 destroy_wq:
 	destroy_workqueue(osds->dispatch_wq);
+destroy_store:
+	ceph_store_destroy(osds->store);
 free_cache:
 	kmem_cache_destroy(osds->msg_cache);
 
