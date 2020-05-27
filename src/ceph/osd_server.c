@@ -178,6 +178,7 @@ static struct ceph_osd_req_op *alloc_osd_req_op(struct ceph_osds_msg *m)
 	if (unlikely(!op))
 		return NULL;
 
+	ceph_msg_data_init(&op->indata);
 	m->ops[m->nr_ops++] = op;
 
 	return op;
@@ -190,6 +191,7 @@ static void free_osd_req_ops(struct ceph_osds_msg *m)
 
 	for (i = 0; i < m->nr_ops; i++) {
 		op = m->ops[i];
+		ceph_msg_data_release(&op->indata);
 		kfree(op);
 	}
 	if (m->ops != m->ops_arr)
@@ -1304,6 +1306,9 @@ static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
 	if (WARN_ON(op->op == CEPH_OSD_OP_CALL))
 		/* Avoid recursion */
 		return -EINVAL;
+
+	/* Take ownership, kvec will be put when message is destroyed */
+	ceph_kvec_get(in);
 
 	/* Init msg data with input kvec */
 	ceph_msg_data_kvec_init(&op->indata, in);
