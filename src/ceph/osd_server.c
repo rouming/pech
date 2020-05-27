@@ -48,10 +48,17 @@ struct ceph_msg_osd_op {
 			       *object; /* cached object for OP_CALL */
 };
 
+struct ceph_osds_pg {
+	struct rb_node         node;     /* node of ->pgs */
+	struct ceph_spg        spg;
+	struct rb_root         objects;  /* all objects */
+};
+
 struct ceph_osds_msg {
 	struct ceph_msg        msg;  /* should be the first in the struct */
 	struct work_struct     work;
 	struct ceph_msg_osd_op req;
+	struct ceph_osds_pg    *pg;
 
 	struct ceph_osd_req_op *ops_arr[CEPH_OSD_MAX_OPS]; /* additional ops */
 	struct ceph_osd_req_op **ops;
@@ -68,15 +75,15 @@ struct ceph_osd_server {
 	struct ceph_client     *client;
 	int                    osd;
 	struct ceph_cls_loader class_loader;
-	struct rb_root         s_objects;  /* all objects */
+	struct ceph_store      *store;
+	struct rb_root         pgs;        /* all pgs */
 	struct workqueue_struct
 			       *dispatch_wq;
 	struct kmem_cache      *msg_cache;
-
 };
 
 struct ceph_osds_object {
-	struct rb_node         o_node;    /* node of ->s_objects */
+	struct rb_node         o_node;    /* node of ->objects */
 	struct ceph_hobject_id o_hoid;
 	struct rb_root         o_blocks;  /* all blocks of the object */
 	struct rb_root         o_omap;    /* omap of the object */
@@ -98,6 +105,11 @@ struct ceph_osds_omap_entry {
 	struct ceph_pagelist   *e_val_pl;
 };
 
+/* Define RB functions for collection lookup and insert by spg */
+DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
+		 ceph_spg_compare, RB_BYPTR, struct ceph_spg *,
+		 node);
+
 /**
  * Define RB functions for object lookup and insert by hoid
  */
@@ -118,6 +130,22 @@ DEFINE_RB_FUNCS2(omap_entry, struct ceph_osds_omap_entry, e_key,
 
 static int handle_osd_op(struct ceph_osds_msg *osds_msg,
 			 struct ceph_osd_req_op *op);
+
+static inline struct ceph_osd_server *con_to_osds(struct ceph_connection *con)
+{
+	struct ceph_client *client =
+		container_of(con->msgr, typeof(*client), msgr);
+
+	return client->private;
+}
+
+static inline struct ceph_osd_client *con_to_osdc(struct ceph_connection *con)
+{
+	struct ceph_client *client =
+		container_of(con->msgr, typeof(*client), msgr);
+
+	return &client->osdc;
+}
 
 static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 {
@@ -199,17 +227,17 @@ static void free_osd_req_ops(struct ceph_osds_msg *m)
 }
 
 static struct ceph_osds_object *
-ceph_lookup_object(struct ceph_osd_server *osds,
+ceph_lookup_object(struct ceph_osds_pg *pg,
 		   struct ceph_msg_osd_op *req)
 {
 	if (!req->object)
-		req->object = lookup_object_by_hoid(&osds->s_objects,
+		req->object = lookup_object_by_hoid(&pg->objects,
 						    &req->hoid);
 	return req->object;
 }
 
 static struct ceph_osds_object *
-ceph_create_and_insert_object(struct ceph_osd_server *osds,
+ceph_create_and_insert_object(struct ceph_osds_pg *pg,
 			      struct ceph_msg_osd_op *req)
 {
 	struct ceph_osds_object *obj;
@@ -225,7 +253,7 @@ ceph_create_and_insert_object(struct ceph_osd_server *osds,
 	RB_CLEAR_NODE(&obj->o_node);
 	ceph_hoid_init(&obj->o_hoid);
 	ceph_hoid_copy(&obj->o_hoid, &req->hoid);
-	insert_object_by_hoid(&osds->s_objects, obj);
+	insert_object_by_hoid(&pg->objects, obj);
 
 	/* Cache an object */
 	req->object = obj;
@@ -260,6 +288,48 @@ ceph_create_and_insert_omap(struct rb_root *root, const char *key)
 	insert_omap_entry(root, ome);
 
 	return ome;
+}
+
+static int ceph_get_or_create_pg(struct ceph_connection *con,
+				 struct ceph_osds_msg *m)
+{
+	struct ceph_osd_client *osdc = con_to_osdc(con);
+	struct ceph_osd_server *osds = con_to_osds(con);
+	unsigned long _1s = msecs_to_jiffies(1000);
+	struct ceph_osds_pg *pg;
+
+	int ret, waits = 60;
+
+	/* Check we are up-to-date */
+again:
+	ret = ceph_wait_for_osdmap(osdc->client, m->req.epoch, _1s);
+	if (unlikely(ret)) {
+		if (ret == -ETIMEDOUT && waits--)
+			goto again;
+		pr_err("%s: wait for osd map failed, ret=%d\n",
+		       __func__, ret);
+		return -EAGAIN;
+	}
+
+	pg = lookup_pg(&osds->pgs, &m->req.spg);
+	if (likely(pg))
+		goto out;
+
+	pg = kzalloc(sizeof(*pg), GFP_KERNEL);
+	if (unlikely(!pg))
+		return -ENOMEM;
+
+	/* TODO: PG structure is not bound to the store, only in cache */
+
+	pg->objects = RB_ROOT;
+	RB_CLEAR_NODE(&pg->node);
+	pg->spg = m->req.spg;
+	insert_pg(&osds->pgs, pg);
+
+out:
+	m->pg = pg;
+
+	return 0;
 }
 
 static int osds_accept_con(struct ceph_connection *con)
@@ -768,22 +838,6 @@ bad:
 	goto err;
 }
 
-static inline struct ceph_osd_server *con_to_osds(struct ceph_connection *con)
-{
-	struct ceph_client *client =
-		container_of(con->msgr, typeof(*client), msgr);
-
-	return client->private;
-}
-
-static inline struct ceph_osd_client *con_to_osdc(struct ceph_connection *con)
-{
-	struct ceph_client *client =
-		container_of(con->msgr, typeof(*client), msgr);
-
-	return &client->osdc;
-}
-
 static inline int next_dst(struct ceph_osd_req_op *op,
 			   struct ceph_osds_object *obj,
 			   struct ceph_osds_block **pblk,
@@ -825,7 +879,6 @@ static inline int next_dst(struct ceph_osd_req_op *op,
 static int handle_osd_op_write(struct ceph_osds_msg *m,
 			       struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
@@ -848,9 +901,9 @@ static int handle_osd_op_write(struct ceph_osds_msg *m,
 	/*
 	 * Find or create an object
 	 */
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj) {
-		obj = ceph_create_and_insert_object(osds, &m->req);
+		obj = ceph_create_and_insert_object(m->pg, &m->req);
 		if (!obj)
 			return -ENOMEM;
 	}
@@ -937,7 +990,6 @@ static struct ceph_osds_block *lookup_block_ge(struct ceph_osds_object *obj,
 static int handle_osd_op_read(struct ceph_osds_msg *m,
 			      struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
 	size_t len_read, map_size;
@@ -950,7 +1002,7 @@ static int handle_osd_op_read(struct ceph_osds_msg *m,
 	struct ceph_bvec_iter it;
 
 	/* Find an object */
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		return -ENOENT;
 
@@ -1043,7 +1095,6 @@ static int handle_osd_op_read(struct ceph_osds_msg *m,
 static int handle_osd_op_stat(struct ceph_osds_msg *m,
 			      struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_osds_object *obj;
 	struct ceph_bvec_iter it;
 	struct ceph_timespec ts;
@@ -1052,7 +1103,7 @@ static int handle_osd_op_stat(struct ceph_osds_msg *m,
 	int ret;
 
 	/* Find an object */
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		return -ENOENT;
 
@@ -1488,7 +1539,6 @@ static int ceph_encode_omap_entry(struct ceph_pagelist *pl,
 static int handle_osd_op_omapgetvals(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
@@ -1524,7 +1574,7 @@ static int handle_osd_op_omapgetvals(struct ceph_osds_msg *m,
 	if (ret)
 		goto err;
 
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		/* Last bits and we are done */
 		goto finish;
@@ -1603,7 +1653,6 @@ enomem:
 static int handle_osd_op_omapgetvalsbykeys(struct ceph_osds_msg *m,
 					   struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	struct ceph_pagelist *pl = NULL;
@@ -1626,7 +1675,7 @@ static int handle_osd_op_omapgetvalsbykeys(struct ceph_osds_msg *m,
 	if (ret)
 		goto err;
 
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		/* Last bits and we are done */
 		goto finish;
@@ -1685,7 +1734,6 @@ enomem:
 static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	int ret;
@@ -1696,9 +1744,9 @@ static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 	cnt = cursor_decode_safe(32, in_cur, einval);
 
 	/* Find or create an object */
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj) {
-		obj = ceph_create_and_insert_object(osds, &m->req);
+		obj = ceph_create_and_insert_object(m->pg, &m->req);
 		if (!obj)
 			goto enomem;
 	}
@@ -1757,7 +1805,6 @@ enomem:
 static int handle_osd_op_omapgetkeys(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
@@ -1790,7 +1837,7 @@ static int handle_osd_op_omapgetkeys(struct ceph_osds_msg *m,
 	if (ret)
 		goto err;
 
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		/* Last bits and we are done */
 		goto finish;
@@ -1856,7 +1903,6 @@ enomem:
 static int handle_osd_op_getxattr(struct ceph_osds_msg *m,
 				  struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
@@ -1874,7 +1920,7 @@ static int handle_osd_op_getxattr(struct ceph_osds_msg *m,
 	if (!pl)
 		goto enomem;
 
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj)
 		goto einval;
 
@@ -1920,7 +1966,6 @@ enodata:
 static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
 				  struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
@@ -1935,9 +1980,9 @@ static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
 		goto einval;
 
 	/* Find or create an object */
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (!obj) {
-		obj = ceph_create_and_insert_object(osds, &m->req);
+		obj = ceph_create_and_insert_object(m->pg, &m->req);
 		if (!obj)
 			goto enomem;
 	}
@@ -1991,14 +2036,13 @@ enomem:
 static int handle_osd_op_create(struct ceph_osds_msg *m,
 				struct ceph_osd_req_op *op)
 {
-	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
 	struct ceph_osds_object *obj;
 
-	obj = ceph_lookup_object(osds, &m->req);
+	obj = ceph_lookup_object(m->pg, &m->req);
 	if (obj)
 		return op->flags & CEPH_OSD_OP_FLAG_EXCL ? -EEXIST : 0;
 
-	obj = ceph_create_and_insert_object(osds, &m->req);
+	obj = ceph_create_and_insert_object(m->pg, &m->req);
 	if (!obj)
 		return -ENOMEM;
 
@@ -2072,7 +2116,6 @@ static void handle_osd_ops(struct ceph_connection *con,
 			   struct ceph_osds_msg *m)
 {
 	struct ceph_osd_client *osdc = con_to_osdc(con);
-	unsigned long _1s = msecs_to_jiffies(1000);
 	struct ceph_msg_data_cursor in_cur;
 	struct ceph_msg *reply;
 	int ret, i;
@@ -2087,14 +2130,10 @@ static void handle_osd_ops(struct ceph_connection *con,
 		return;
 	}
 
-	/* Check we are up-to-date. XXX We need PG and a lot more. */
-	ret = ceph_wait_for_osdmap(osdc->client, m->req.epoch, _1s);
-	if (unlikely(ret)) {
-		pr_err("%s: wait for osd map failed, ret=%d\n",
-		       __func__, ret);
-		ret = -EAGAIN;
+	/* Get and cache PG for the current message */
+	ret = ceph_get_or_create_pg(con, m);
+	if (unlikely(ret))
 		goto send_reply;
-	}
 
 	/* Init iterator for input data, ->data_length can be 0 */
 	ceph_msg_data_cursor_init(&in_cur, m->msg.data, WRITE,
@@ -2269,7 +2308,7 @@ ceph_create_osd_server(struct ceph_options *opt, int osd)
 		return ERR_PTR(-ENOMEM);
 
 	osds->osd = osd;
-	osds->s_objects = RB_ROOT;
+	osds->pgs = RB_ROOT;
 	ceph_cls_init(&osds->class_loader, opt);
 
 	client = __ceph_create_client(opt, osds, CEPH_ENTITY_TYPE_OSD,
@@ -2357,17 +2396,29 @@ static void destroy_xattrs(struct ceph_osds_object *obj)
 	__destroy_omap(&obj->o_xattrs);
 }
 
-static void destroy_objects(struct ceph_osd_server *osds)
+static void destroy_objects(struct rb_root *root)
 {
 	struct ceph_osds_object *obj;
 
-	while ((obj = rb_entry_safe(rb_first(&osds->s_objects),
+	while ((obj = rb_entry_safe(rb_first(root),
 				    typeof(*obj), o_node))) {
 		destroy_blocks(obj);
 		destroy_omap(obj);
 		destroy_xattrs(obj);
-		erase_object_by_hoid(&osds->s_objects, obj);
+		erase_object_by_hoid(root, obj);
 		kfree(obj);
+	}
+}
+
+static void destroy_pgs(struct ceph_osd_server *osds)
+{
+	struct ceph_osds_pg *pg;
+
+	while ((pg = rb_entry_safe(rb_first(&osds->pgs),
+				   typeof(*pg), node))) {
+		destroy_objects(&pg->objects);
+		erase_pg(&osds->pgs, pg);
+		kfree(pg);
 	}
 }
 
@@ -2376,7 +2427,7 @@ void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 	ceph_stop_osd_server(osds);
 	flush_workqueue(osds->dispatch_wq);
 	ceph_destroy_client(osds->client);
-	destroy_objects(osds);
+	destroy_pgs(osds);
 	ceph_cls_deinit(&osds->class_loader);
 	destroy_workqueue(osds->dispatch_wq);
 	kmem_cache_destroy(osds->msg_cache);
