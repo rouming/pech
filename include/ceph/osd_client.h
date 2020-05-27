@@ -59,8 +59,16 @@ struct ceph_osd_req_op {
 	u32 outdata_len;  /* reply */
 	s32 rval;
 
+	/*
+	 * Outdata and indata members are used on OSD server side.
+	 * TODO: structure need to be refactored, probably split
+	 *       on client and server.
+	 */
+
 	/* Set when operation is completed */
-	struct ceph_msg_data *outdata;
+	struct ceph_msg_data        *outdata;
+	struct ceph_msg_data        indata;
+	struct ceph_msg_data_cursor incur;
 
 	union {
 		struct ceph_msg_data raw_data;

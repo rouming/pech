@@ -117,8 +117,7 @@ DEFINE_RB_FUNCS2(omap_entry, struct ceph_osds_omap_entry, e_key,
 		 strcmp, RB_BYVAL, char *, e_node);
 
 static int handle_osd_op(struct ceph_osds_msg *osds_msg,
-			 struct ceph_osd_req_op *op,
-			 struct ceph_msg_data_cursor *in_cur);
+			 struct ceph_osd_req_op *op);
 
 static int alloc_bvec(struct ceph_bvec_iter *it, size_t data_len)
 {
@@ -822,10 +821,10 @@ static inline int next_dst(struct ceph_osd_req_op *op,
 }
 
 static int handle_osd_op_write(struct ceph_osds_msg *m,
-			       struct ceph_osd_req_op *op,
-			       struct ceph_msg_data_cursor *in_cur)
+			       struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	struct ceph_osds_block *blk;
 
@@ -1288,8 +1287,6 @@ static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
 			       struct ceph_kvec **out)
 {
 	struct osds_cls_call_ctx *osds_ctx;
-	struct ceph_msg_data_cursor in_cur;
-	struct ceph_msg_data in_data;
 	struct ceph_osd_req_op *op;
 	int ret;
 
@@ -1309,12 +1306,13 @@ static int osds_cls_execute_op(struct ceph_cls_call_ctx *ctx,
 		return -EINVAL;
 
 	/* Init msg data with input kvec */
-	ceph_msg_data_kvec_init(&in_data, in);
+	ceph_msg_data_kvec_init(&op->indata, in);
 
 	/* Init iterator for input data */
-	ceph_msg_data_cursor_init(&in_cur, &in_data, WRITE, in->length);
+	ceph_msg_data_cursor_init(&op->incur, &op->indata,
+				  WRITE, in->length);
 
-	ret = handle_osd_op(osds_ctx->m, op, &in_cur);
+	ret = handle_osd_op(osds_ctx->m, op);
 	if (ret)
 		return ret;
 
@@ -1338,10 +1336,10 @@ static struct ceph_cls_callback_ops cls_callback_ops = {
 };
 
 static int handle_osd_op_call(struct ceph_osds_msg *m,
-			      struct ceph_osd_req_op *op,
-			      struct ceph_msg_data_cursor *in_cur)
+			      struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct osds_cls_call_ctx osds_ctx;
 	struct ceph_kvec *out = NULL;
 	char cname[16], mname[128];
@@ -1483,10 +1481,10 @@ static int ceph_encode_omap_entry(struct ceph_pagelist *pl,
 }
 
 static int handle_osd_op_omapgetvals(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op,
-				     struct ceph_msg_data_cursor *in_cur)
+				     struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
 	struct ceph_pagelist *pl = NULL;
@@ -1598,10 +1596,10 @@ enomem:
 }
 
 static int handle_osd_op_omapgetvalsbykeys(struct ceph_osds_msg *m,
-					   struct ceph_osd_req_op *op,
-					   struct ceph_msg_data_cursor *in_cur)
+					   struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	struct ceph_pagelist *pl = NULL;
 	int ret;
@@ -1680,10 +1678,10 @@ enomem:
 }
 
 static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op,
-				     struct ceph_msg_data_cursor *in_cur)
+				     struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_object *obj;
 	int ret;
 
@@ -1752,10 +1750,10 @@ enomem:
 }
 
 static int handle_osd_op_omapgetkeys(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op,
-				     struct ceph_msg_data_cursor *in_cur)
+				     struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
 	struct ceph_pagelist *pl = NULL;
@@ -1851,10 +1849,10 @@ enomem:
 }
 
 static int handle_osd_op_getxattr(struct ceph_osds_msg *m,
-				  struct ceph_osd_req_op *op,
-				  struct ceph_msg_data_cursor *in_cur)
+				  struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
 	struct ceph_pagelist *pl = NULL;
@@ -1915,10 +1913,10 @@ enodata:
 }
 
 static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
-				  struct ceph_osd_req_op *op,
-				  struct ceph_msg_data_cursor *in_cur)
+				  struct ceph_osd_req_op *op)
 {
 	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_data_cursor *in_cur = &op->incur;
 	struct ceph_osds_omap_entry *ome;
 	struct ceph_osds_object *obj;
 	size_t val_len;
@@ -2003,15 +2001,14 @@ static int handle_osd_op_create(struct ceph_osds_msg *m,
 }
 
 static int handle_osd_op(struct ceph_osds_msg *m,
-			 struct ceph_osd_req_op *op,
-			 struct ceph_msg_data_cursor *in_cur)
+			 struct ceph_osd_req_op *op)
 {
 	int ret;
 
 	switch (op->op) {
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
-		ret = handle_osd_op_write(m, op, in_cur);
+		ret = handle_osd_op_write(m, op);
 		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
@@ -2022,25 +2019,25 @@ static int handle_osd_op(struct ceph_osds_msg *m,
 		ret = handle_osd_op_stat(m, op);
 		break;
 	case CEPH_OSD_OP_CALL:
-		ret = handle_osd_op_call(m, op, in_cur);
+		ret = handle_osd_op_call(m, op);
 		break;
 	case CEPH_OSD_OP_OMAPGETVALS:
-		ret = handle_osd_op_omapgetvals(m, op, in_cur);
+		ret = handle_osd_op_omapgetvals(m, op);
 		break;
 	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
-		ret = handle_osd_op_omapgetvalsbykeys(m, op, in_cur);
+		ret = handle_osd_op_omapgetvalsbykeys(m, op);
 		break;
 	case CEPH_OSD_OP_OMAPSETVALS:
-		ret = handle_osd_op_omapsetvals(m, op, in_cur);
+		ret = handle_osd_op_omapsetvals(m, op);
 		break;
 	case CEPH_OSD_OP_OMAPGETKEYS:
-		ret = handle_osd_op_omapgetkeys(m, op, in_cur);
+		ret = handle_osd_op_omapgetkeys(m, op);
 		break;
 	case CEPH_OSD_OP_GETXATTR:
-		ret = handle_osd_op_getxattr(m, op, in_cur);
+		ret = handle_osd_op_getxattr(m, op);
 		break;
 	case CEPH_OSD_OP_SETXATTR:
-		ret = handle_osd_op_setxattr(m, op, in_cur);
+		ret = handle_osd_op_setxattr(m, op);
 		break;
 	case CEPH_OSD_OP_CREATE:
 		ret = handle_osd_op_create(m, op);
@@ -2100,15 +2097,13 @@ static void handle_osd_ops(struct ceph_connection *con,
 
 	/* Iterate over all operations */
 	for (i = 0; i < m->req.num_ops; i++) {
-		/*
-		 * Cache cursor and advance on indata_len, regardless
-		 * what operation does with cursor.
-		 */
-		struct ceph_msg_data_cursor op_in_cur = in_cur;
 		struct ceph_osd_req_op *op = &m->req.ops[i];
 
+		/* Cache cursor and advance on indata_len */
+		op->incur = in_cur;
+
 		/* Make things happen */
-		ret = handle_osd_op(m, op, &op_in_cur);
+		ret = handle_osd_op(m, op);
 		if (ret && (op->flags & CEPH_OSD_OP_FLAG_FAILOK) &&
 		    ret != -EAGAIN && ret != -EINPROGRESS)
 			/* Ignore op error and continue executing */
