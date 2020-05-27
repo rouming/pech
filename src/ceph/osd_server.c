@@ -32,7 +32,7 @@ struct ceph_msg_osd_op {
 	u64                    tid;    /* unique for this peer */
 	u64                    features;
 	u32                    epoch;
-	struct ceph_spg        spgid;
+	struct ceph_spg        spg;
 	u32                    flags;
 	int                    attempts;
 	struct timespec64      mtime;
@@ -466,7 +466,7 @@ create_osd_op_reply(struct ceph_msg_osd_op *req,
 	ceph_encode_string_safe(&p, end, req->hoid.oid.name,
 				req->hoid.oid.name_len, bad);
 
-	ret = encode_pgid(&p, end, &req->spgid.pgid);
+	ret = encode_pgid(&p, end, &req->spg.pgid);
 	if (ret)
 		goto bad;
 
@@ -538,7 +538,7 @@ static void deinit_msg_osd_op(struct ceph_msg_osd_op *req)
 	kfree(req->snaps);
 }
 
-static int decode_spgid(void **p, void *end, struct ceph_spg *spgid)
+static int decode_spg(void **p, void *end, struct ceph_spg *spg)
 {
 	void *beg;
 	u32 struct_len = 0;
@@ -548,9 +548,9 @@ static int decode_spgid(void **p, void *end, struct ceph_spg *spgid)
 	ret = ceph_start_decoding(p, end, 1, "pgid", &struct_v, &struct_len);
 	beg = *p;
 	if (!ret)
-		ret = ceph_decode_pgid(p, end, &spgid->pgid);
+		ret = ceph_decode_pgid(p, end, &spg->pgid);
 	if (!ret)
-		ceph_decode_8_safe(p, end, spgid->shard, bad);
+		ceph_decode_8_safe(p, end, spg->shard, bad);
 
 	if (!ret) {
 		if (beg + struct_len < *p) {
@@ -678,7 +678,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 
 	req->tid = le64_to_cpu(msg->hdr.tid);
 
-	ret = decode_spgid(&p, end, &req->spgid); /* actual spg */
+	ret = decode_spg(&p, end, &req->spg); /* actual spg */
 	if (ret)
 		goto err;
 	ceph_decode_32_safe(&p, end, req->hoid.hash, bad); /* raw hash */
@@ -755,7 +755,7 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 	ceph_decode_64_safe(&p, end, req->features, bad);
 
 	ceph_hoid_build_hash_cache(&req->hoid);
-	req->hoid.pool = req->spgid.pgid.pool;
+	req->hoid.pool = req->spg.pgid.pool;
 	/* XXX Should be something valid? */
 	req->hoid.key = NULL;
 	req->hoid.nspace = ceph_get_string(req->oloc.pool_ns);
