@@ -7,8 +7,6 @@
 #include "slab.h"
 #include "getorder.h"
 
-#include "semaphore.h"
-
 #include "ceph/ceph_features.h"
 #include "ceph/libceph.h"
 #include "ceph/osd_server.h"
@@ -20,12 +18,6 @@
 #include "ceph/transaction.h"
 #include "ceph/memstore.h"
 #include "ceph/objclass/class_loader.h"
-
-enum {
-	OSDS_BLOCK_SHIFT    = 16, /* 64k, must be ^2 */
-	OSDS_BLOCK_SIZE     = (1UL << OSDS_BLOCK_SHIFT),
-	OSDS_BLOCK_MASK     = (~(OSDS_BLOCK_SIZE-1))
-};
 
 static const struct ceph_connection_operations osds_con_ops;
 
@@ -46,15 +38,12 @@ struct ceph_msg_osd_op {
 	unsigned int           num_snaps;
 	u64                    snap_seq;
 	u64                    *snaps;
-	struct ceph_osds_object
-			       *object; /* cached object for OP_CALL */
 };
 
 struct ceph_osds_pg {
 	struct rb_node         node;     /* node of ->pgs */
 	struct ceph_store_coll *coll;
 	struct ceph_spg        spg;
-	struct rb_root         objects;  /* all objects */
 	struct rb_root         objs_info;/* all objects info structures */
 };
 
@@ -96,29 +85,6 @@ struct ceph_osd_server {
 	struct kmem_cache      *msg_cache;
 };
 
-struct ceph_osds_object {
-	struct rb_node         o_node;    /* node of ->objects */
-	struct ceph_hobject_id o_hoid;
-	struct rb_root         o_blocks;  /* all blocks of the object */
-	struct rb_root         o_omap;    /* omap of the object */
-	struct rb_root         o_xattrs;  /* xattr of the object */
-	size_t                 o_size;    /* size of an object */
-	struct timespec64      o_mtime;   /* modification time of an object */
-};
-
-struct ceph_osds_block {
-	struct rb_node         b_node;    /* node of ->o_blocks */
-	struct page            *b_page;
-	off_t                  b_off;     /* offset inside a whole object */
-};
-
-struct ceph_osds_omap_entry {
-	struct rb_node         e_node;   /* node of ->o_omap or ->o_xattrs */
-	char                   *e_key;
-	unsigned int           e_key_len;
-	struct ceph_pagelist   *e_val_pl;
-};
-
 /* Define RB functions for collection lookup and insert by spg */
 DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
 		 ceph_spg_compare, RB_BYPTR, struct ceph_spg *,
@@ -128,24 +94,6 @@ DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
 DEFINE_RB_FUNCS2(obj_info, struct ceph_osds_obj_info, hoid,
 		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
 		 node);
-
-/**
- * Define RB functions for object lookup and insert by hoid
- */
-DEFINE_RB_FUNCS2(object_by_hoid, struct ceph_osds_object, o_hoid,
-		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
-		 o_node);
-
-/**
- * Define RB functions for object block lookup by offset
- */
-DEFINE_RB_FUNCS(object_block_by_off, struct ceph_osds_block, b_off, b_node);
-
-/**
- * Define RB functions for omap lookup by string
- */
-DEFINE_RB_FUNCS2(omap_entry, struct ceph_osds_omap_entry, e_key,
-		 strcmp, RB_BYVAL, char *, e_node);
 
 static int handle_osd_op(struct ceph_osds_msg *osds_msg,
 			 struct ceph_osd_req_op *op);
@@ -245,70 +193,6 @@ static void free_osd_req_ops(struct ceph_osds_msg *m)
 		kfree(m->ops);
 }
 
-static struct ceph_osds_object *
-ceph_lookup_object(struct ceph_osds_pg *pg,
-		   struct ceph_msg_osd_op *req)
-{
-	if (!req->object)
-		req->object = lookup_object_by_hoid(&pg->objects,
-						    &req->hoid);
-	return req->object;
-}
-
-static struct ceph_osds_object *
-ceph_create_and_insert_object(struct ceph_osds_pg *pg,
-			      struct ceph_msg_osd_op *req)
-{
-	struct ceph_osds_object *obj;
-
-	obj = kmalloc(sizeof(*obj), GFP_KERNEL);
-	if (!obj)
-		return NULL;
-
-	obj->o_size = 0;
-	obj->o_blocks = RB_ROOT;
-	obj->o_omap = RB_ROOT;
-	obj->o_xattrs = RB_ROOT;
-	RB_CLEAR_NODE(&obj->o_node);
-	ceph_hoid_init(&obj->o_hoid);
-	ceph_hoid_copy(&obj->o_hoid, &req->hoid);
-	insert_object_by_hoid(&pg->objects, obj);
-
-	/* Cache an object */
-	req->object = obj;
-
-	return obj;
-}
-
-static struct ceph_osds_omap_entry *
-ceph_create_and_insert_omap(struct rb_root *root, const char *key)
-{
-	struct ceph_osds_omap_entry *ome;
-	size_t key_len = strlen(key);
-
-	ome = kmalloc(sizeof(*ome), GFP_KERNEL);
-	if (!ome)
-		return NULL;
-
-	ome->e_key = kstrndup(key, key_len, GFP_KERNEL);
-	if (!ome->e_key) {
-		kfree(ome);
-		return NULL;
-	}
-	ome->e_key_len = key_len;
-	RB_CLEAR_NODE(&ome->e_node);
-
-	ome->e_val_pl = ceph_pagelist_alloc(GFP_KERNEL);
-	if (!ome->e_val_pl) {
-		kfree(ome->e_key);
-		kfree(ome);
-		return NULL;
-	}
-	insert_omap_entry(root, ome);
-
-	return ome;
-}
-
 static int ceph_get_or_create_pg(struct ceph_connection *con,
 				 struct ceph_osds_msg *m)
 {
@@ -370,7 +254,6 @@ deinit_txn:
 
 	/* TODO: PG structure is not bound to the store, only in cache */
 
-	pg->objects = RB_ROOT;
 	pg->objs_info = RB_ROOT;
 	RB_CLEAR_NODE(&pg->node);
 	pg->spg = m->req.spg;
@@ -695,7 +578,6 @@ static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 	ceph_oloc_init(&req->oloc);
 	ceph_hoid_init(&req->hoid);
 	req->snaps = NULL;
-	req->object = NULL;
 }
 
 static void deinit_msg_osd_op(struct ceph_msg_osd_op *req)
@@ -935,44 +817,6 @@ bad:
 	goto err;
 }
 
-static inline int next_dst(struct ceph_osd_req_op *op,
-			   struct ceph_osds_object *obj,
-			   struct ceph_osds_block **pblk,
-			   off_t dst_off,
-			   size_t *dst_len)
-{
-	struct ceph_osds_block *blk;
-	off_t blk_off;
-
-	blk_off = ALIGN_DOWN(dst_off, OSDS_BLOCK_SIZE);
-	blk = lookup_object_block_by_off(&obj->o_blocks, blk_off);
-	if (!blk) {
-		unsigned int order;
-
-		blk = kmalloc(sizeof(*blk), GFP_KERNEL);
-		if (!blk)
-			return -ENOMEM;
-
-		RB_CLEAR_NODE(&blk->b_node);
-		order = OSDS_BLOCK_SHIFT - PAGE_SHIFT;
-		blk->b_page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
-		blk->b_off = blk_off;
-
-		if (!blk->b_page) {
-			kfree(blk);
-			return -ENOMEM;
-		}
-
-		insert_object_block_by_off(&obj->o_blocks, blk);
-	}
-
-	*dst_len = OSDS_BLOCK_SIZE - (dst_off & ~OSDS_BLOCK_MASK);
-	*pblk = blk;
-
-
-	return 0;
-}
-
 static int handle_osd_op_write(struct ceph_osds_msg *m,
 			       struct ceph_osd_req_op *op)
 {
@@ -984,262 +828,6 @@ static int handle_osd_op_write(struct ceph_osds_msg *m,
 
 	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
 				&m->req.hoid, &m->req.mtime, op);
-}
-
-__attribute__((unused))
-static int handle_osd_op_write_REMOVE_ASAP(struct ceph_osds_msg *m,
-			       struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_object *obj;
-	struct ceph_osds_block *blk;
-
-	size_t len_write, dst_len;
-	off_t dst_off;
-
-	bool modified = false;
-	int ret;
-
-	if (!op->extent.length)
-		/* Nothing to do */
-		return 0;
-
-	if (ceph_test_opt(m->msg.con->msgr->options, NOOP_WRITE) &&
-	    op->extent.length >= 4096)
-		/* Write is noop */
-		return 0;
-
-	/*
-	 * Find or create an object
-	 */
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj) {
-		obj = ceph_create_and_insert_object(m->pg, &m->req);
-		if (!obj)
-			return -ENOMEM;
-	}
-
-	/*
-	 * Fill in blocks with data of found/created object
-	 */
-	len_write = op->extent.length;
-	dst_off = op->extent.offset;
-	blk = NULL;
-	dst_len = 0;
-	ret = 0;
-
-	while (len_write) {
-		size_t len, len2;
-		void *dst;
-
-		if (!dst_len) {
-			ret = next_dst(op, obj, &blk, dst_off, &dst_len);
-			if (ret)
-				goto out;
-		}
-
-		len = iov_iter_count(&in_cur->iter);
-		len = min(len, dst_len);
-		len = min(len, len_write);
-
-		dst = page_address(blk->b_page);
-		len2 = copy_from_iter(dst + (dst_off & ~OSDS_BLOCK_MASK),
-				      len, &in_cur->iter);
-		WARN_ON(len2 != len);
-
-		ceph_msg_data_cursor_advance(in_cur, len);
-		len_write -= len;
-		dst_len -= len;
-		dst_off += len;
-		modified = true;
-	}
-out:
-	if (modified) {
-		bool truncate = (op->op == CEPH_OSD_OP_WRITEFULL);
-
-		obj->o_mtime = m->req.mtime;
-
-		/* Extend object size if needed or truncate */
-		if (dst_off > obj->o_size || truncate)
-			obj->o_size = dst_off;
-
-		/* FIXME: need to free the rest in case of truncate */
-	}
-
-	return ret;
-}
-
-/**
- * lookup_block_ge() - returns block which offset equal or greater than @off
- */
-static struct ceph_osds_block *lookup_block_ge(struct ceph_osds_object *obj,
-					       off_t off)
-{
-	struct rb_node *n = obj->o_blocks.rb_node;
-	struct ceph_osds_block *right = NULL;
-	int cmp = 0;
-
-	while (n) {
-		struct ceph_osds_block *blk;
-
-		blk = rb_entry(n, typeof(*blk), b_node);
-		cmp = RB_CMP3WAY(off, blk->b_off);
-		if (cmp < 0) {
-			right = blk;
-			n = n->rb_left;
-		}
-		else if (cmp > 0) {
-			n = n->rb_right;
-		} else {
-			return blk;
-		}
-	}
-
-	return right;
-}
-
-__attribute__((unused))
-static int handle_osd_op_read(struct ceph_osds_msg *m,
-			      struct ceph_osd_req_op *op)
-{
-	struct ceph_osds_object *obj;
-	struct ceph_osds_block *blk;
-	size_t len_read, map_size;
-	off_t off, blk_off;
-	unsigned off_inpg;
-	bool is_sparse;
-	void *p;
-	int ret;
-
-	struct ceph_bvec_iter it;
-
-	/* Find an object */
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		return -ENOENT;
-
-	if (!op->extent.length)
-		/* Nothing to do */
-		return 0;
-
-	if (op->extent.offset >= obj->o_size)
-		/* Offset is beyond the object, nothing to do */
-		return 0;
-
-	is_sparse = (op->op == CEPH_OSD_OP_SPARSE_READ);
-	map_size = is_sparse ? 4 + 8 + 8 + 4: 0;
-
-	len_read = min(op->extent.length, obj->o_size - op->extent.offset);
-
-	/* Allocate bvec for the read chunk */
-	ret = alloc_bvec(&it, map_size + len_read);
-	if (ret)
-		return ret;
-
-	/* Setup output length and data */
-	op->outdata_len = map_size + len_read;
-	op->outdata = &op->extent.osd_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_bvecs_init(&op->extent.osd_data, &it, 1, true);
-
-	/* Here we always have 1 segment bvec, with mpages though */
-	p = page_address(it.bvecs->bv_page);
-
-	if (is_sparse) {
-		/* Encode extent map, for now we have only 1 entry */
-		ceph_encode_32(&p, 1); /* map size */
-		ceph_encode_64(&p, op->extent.offset); /* offset as a key */
-		ceph_encode_64(&p, len_read); /* len as a value */
-		ceph_encode_32(&p, len_read); /* len of the following extent */
-	}
-
-	off_inpg = 0;
-	off = op->extent.offset;
-	blk_off = ALIGN_DOWN(off, OSDS_BLOCK_SIZE);
-	blk = lookup_block_ge(obj, blk_off);
-	while (blk && len_read) {
-		/* Found block is exactly we were looking for or the next one */
-		BUG_ON(blk->b_off < blk_off);
-
-		/* Zero out a possible hole before block */
-		if (blk->b_off > off) {
-			size_t len_zero = blk->b_off - off;
-
-			len_zero = min(len_zero, len_read);
-			memset(p + off_inpg, 0, len_zero);
-
-			len_read -= len_zero;
-			off_inpg += len_zero;
-			off += len_zero;
-		}
-
-		/* Copy block */
-		if (len_read) {
-			void *src = page_address(blk->b_page);
-			off_t off_inblk = off & ~OSDS_BLOCK_MASK;
-			size_t len_copy;
-
-			len_copy = min((size_t)OSDS_BLOCK_SIZE - off_inblk,
-				       len_read);
-
-			memcpy(p + off_inpg, src + off_inblk, len_copy);
-
-			len_read -= len_copy;
-			off_inpg += len_copy;
-			off += len_copy;
-		}
-
-		/* Get the next block */
-		if (len_read) {
-			blk = rb_entry_safe(rb_next(&blk->b_node),
-					    typeof(*blk), b_node);
-		}
-	}
-
-	if (len_read)
-		/* Zero out the rest */
-		memset(p + off_inpg, 0, len_read);
-
-	return 0;
-}
-
-__attribute__((unused))
-static int handle_osd_op_stat(struct ceph_osds_msg *m,
-			      struct ceph_osd_req_op *op)
-{
-	struct ceph_osds_object *obj;
-	struct ceph_bvec_iter it;
-	struct ceph_timespec ts;
-	size_t outdata_len;
-	void *p;
-	int ret;
-
-	/* Find an object */
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		return -ENOENT;
-
-	outdata_len = 8 + sizeof(ts);
-
-	/* Allocate bvec for the read chunk */
-	ret = alloc_bvec(&it, outdata_len);
-	if (ret)
-		return ret;
-
-	/* Setup output length */
-	op->outdata_len = outdata_len;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_bvecs_init(&op->raw_data, &it, 1, true);
-
-	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
-	ceph_encode_timespec64(&ts, &obj->o_mtime);
-	ceph_encode_64(&p, obj->o_size);
-	ceph_encode_copy(&p, &ts, sizeof(ts));
-
-	return 0;
 }
 
 struct osds_cls_call_ctx {
@@ -1581,271 +1169,6 @@ static int handle_osd_op_call(struct ceph_osds_msg *m,
 	return 0;
 }
 
-static struct ceph_osds_omap_entry *
-lookup_omap_entry_ge_gt(struct rb_root *root, const char *key, bool equal)
-{
-	struct rb_node *n = root->rb_node;
-	struct ceph_osds_omap_entry *right = NULL;
-	int cmp = 0;
-
-	while (n) {
-		struct ceph_osds_omap_entry *ome;
-
-		ome = rb_entry(n, typeof(*ome), e_node);
-		cmp = strcmp(key, ome->e_key);
-		if (cmp < 0) {
-			right = ome;
-			n = n->rb_left;
-		}
-		else if (cmp > 0) {
-			n = n->rb_right;
-		} else {
-			if (equal)
-				/* Exact match */
-				return ome;
-
-			/*
-			 * We were asked to lookup for the next node,
-			 * i.e. greater than the key. Two options exist:
-			 * a) return right node from the current one,
-			 * b) if right node does not exist - return the
-			 *    cached right, when we turned left.
-			 */
-			n = n->rb_right;
-			if (n)
-				return rb_entry(n, typeof(*ome), e_node);
-
-			return right;
-		}
-	}
-
-	return right;
-}
-
-static struct ceph_osds_omap_entry *
-lookup_omap_entry_ge(struct rb_root *root, const char *key)
-{
-	return lookup_omap_entry_ge_gt(root, key, true);
-}
-
-static struct ceph_osds_omap_entry *
-lookup_omap_entry_gt(struct rb_root *root, const char *key)
-{
-	return lookup_omap_entry_ge_gt(root, key, false);
-}
-
-static int ceph_encode_omap_entry(struct ceph_pagelist *pl,
-				  struct ceph_osds_omap_entry *ome)
-{
-	int ret;
-
-	/* Encode key */
-	ret = ceph_pagelist_encode_string(pl, ome->e_key,
-					  ome->e_key_len);
-	/* Encode value with prefixed length  */
-	if (!ret)
-		ret = ceph_pagelist_encode_pagelist(pl, ome->e_val_pl, true);
-
-	return ret;
-}
-
-__attribute__((unused))
-static int handle_osd_op_omapgetvals(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_omap_entry *ome;
-	struct ceph_osds_object *obj;
-	struct ceph_pagelist *pl = NULL;
-	int ret;
-
-	char *after_str = NULL, *prefix_str = NULL;
-	const char *after;
-	const char *prefix;
-
-	uint64_t max, cnt;
-	u8 more = false;
-
-	after_str = cursor_decode_safe_str(in_cur, GFP_KERNEL, einval, enomem);
-	max = cursor_decode_safe(64, in_cur, einval);
-	prefix_str = cursor_decode_safe_str(in_cur, GFP_KERNEL, einval, enomem);
-
-	after = after_str ?: "";
-	prefix = prefix_str ?: "";
-
-	if (!max)
-		goto einval;
-
-	pl = ceph_pagelist_alloc(GFP_KERNEL);
-	if (!pl)
-		goto enomem;
-
-	/*
-	 * Write zero size of the map, if omap values are found -
-	 * will update the value later.
-	 */
-	ret = ceph_pagelist_encode_32(pl, 0);
-	if (ret)
-		goto err;
-
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		/* Last bits and we are done */
-		goto finish;
-
-	if (strcmp(after, prefix) < 0) {
-		/*
-		 * 'prefix' is to the right from 'after', so do not waste
-		 * time and do lookup *starting* from 'prefix', thus GE.
-		 */
-		ome = lookup_omap_entry_ge(&obj->o_omap, prefix);
-	} else {
-		/*
-		 * Lookup for omaps greater than 'after', thus GT.
-		 */
-		ome = lookup_omap_entry_gt(&obj->o_omap, after);
-	}
-
-	for (cnt = 0; ome && cnt < max; cnt++) {
-		/* Key should start with the prefix */
-		if (strncmp(ome->e_key, prefix, strlen(prefix)))
-		    break;
-
-		/* Encode key and value */
-		ret = ceph_encode_omap_entry(pl, ome);
-		if (ret)
-			goto err;
-
-		/* Get the next node */
-		ome = rb_entry_safe(rb_next(&ome->e_node),
-				    typeof(*ome), e_node);
-	}
-
-	/* Do we have more? */
-	more = (ome && cnt == max);
-
-	if (cnt) {
-		/* Write down map size at 0 offset */
-		ret = ceph_pagelist_encode_32_at_offset(pl, cnt, 0);
-		if (ret)
-			goto err;
-	}
-
-finish:
-	ret = ceph_pagelist_encode_8(pl, more);
-	if (ret)
-		goto err;
-
-	/* Setup output length */
-	op->outdata_len = pl->length;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_pagelist_init(&op->raw_data, pl);
-
-	kfree(after_str);
-	kfree(prefix_str);
-
-	return 0;
-
-err:
-	kfree(after_str);
-	kfree(prefix_str);
-	if (pl)
-		ceph_pagelist_release(pl);
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-}
-
-__attribute__((unused))
-static int handle_osd_op_omapgetvalsbykeys(struct ceph_osds_msg *m,
-					   struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_object *obj;
-	struct ceph_pagelist *pl = NULL;
-	int ret;
-
-	unsigned int i, cnt, max;
-
-	/* How many values we should return */
-	max = cursor_decode_safe(32, in_cur, einval);
-
-	pl = ceph_pagelist_alloc(GFP_KERNEL);
-	if (!pl)
-		return -ENOMEM;
-
-	/*
-	 * Write zero size of the map, if omap values are found -
-	 * will update the value later.
-	 */
-	ret = ceph_pagelist_encode_32(pl, 0);
-	if (ret)
-		goto err;
-
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		/* Last bits and we are done */
-		goto finish;
-
-	for (i = 0, cnt = 0; i < max; i++) {
-		struct ceph_osds_omap_entry *ome;
-		char *key;
-
-		/* Extract a key and lookup for an entry */
-		key = cursor_decode_safe_str(in_cur, GFP_KERNEL,
-					     einval, enomem);
-		ome = lookup_omap_entry(&obj->o_omap, key);
-		kfree(key);
-
-		if (!ome)
-			continue;
-
-		/* Encode key and value */
-		ret = ceph_encode_omap_entry(pl, ome);
-		if (ret)
-			goto err;
-		cnt++;
-	}
-
-	if (cnt) {
-		/* Write down map size at 0 offset */
-		ret = ceph_pagelist_encode_32_at_offset(pl, cnt, 0);
-		if (ret)
-			goto err;
-	}
-
-finish:
-	/* Setup output length */
-	op->outdata_len = pl->length;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_pagelist_init(&op->raw_data, pl);
-
-	return 0;
-
-err:
-	if (pl)
-		ceph_pagelist_release(pl);
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-}
-
 static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 				     struct ceph_osd_req_op *op)
 {
@@ -1857,241 +1180,6 @@ static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 
 	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
 				&m->req.hoid, &m->req.mtime, op);
-}
-
-__attribute__((unused))
-static int handle_osd_op_omapsetvals__REMOVE_ASAP(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_object *obj;
-	int ret;
-
-	unsigned int i, cnt;
-
-	/* How many values we should set */
-	cnt = cursor_decode_safe(32, in_cur, einval);
-
-	/* Find or create an object */
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj) {
-		obj = ceph_create_and_insert_object(m->pg, &m->req);
-		if (!obj)
-			goto enomem;
-	}
-
-	for (i = 0; i < cnt; i++) {
-		struct ceph_osds_omap_entry *ome;
-		size_t val_len;
-		char *key;
-
-		/* Extract key and look omap entry */
-		key = cursor_decode_safe_str(in_cur, GFP_KERNEL,
-					     einval, enomem);
-		ome = lookup_omap_entry(&obj->o_omap, key);
-		if (!ome)
-			ome = ceph_create_and_insert_omap(&obj->o_omap, key);
-		kfree(key);
-		if (!ome)
-			goto enomem;
-
-		/* Get value size */
-		val_len = cursor_decode_safe(32, in_cur, einval);
-
-		/* Reserve enough to keep new value */
-		if (val_len > ome->e_val_pl->length) {
-			ret = ceph_pagelist_reserve(ome->e_val_pl,
-					val_len - ome->e_val_pl->length);
-			if (ret)
-				goto err;
-		}
-
-		/* Copy value */
-		ret = ceph_pagelist_copy_from_cursor(ome->e_val_pl, in_cur,
-						     val_len);
-		/* Should be preallocated, thus no error expected */
-		WARN_ON(ret);
-
-		/* In case old value was bigger than the new one */
-		ret = ceph_pagelist_truncate(ome->e_val_pl, val_len);
-		WARN_ON(ret);
-	}
-
-	return 0;
-
-err:
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-}
-
-__attribute__((unused))
-static int handle_osd_op_omapgetkeys(struct ceph_osds_msg *m,
-				     struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_omap_entry *ome;
-	struct ceph_osds_object *obj;
-	struct ceph_pagelist *pl = NULL;
-	int ret;
-
-	char *after_str = NULL;
-	const char *after;
-
-	uint64_t max, cnt;
-	u8 more = false;
-
-	after_str = cursor_decode_safe_str(in_cur, GFP_KERNEL, einval, enomem);
-	max = cursor_decode_safe(64, in_cur, einval);
-
-	after = after_str ?: "";
-
-	if (!max)
-		goto einval;
-
-	pl = ceph_pagelist_alloc(GFP_KERNEL);
-	if (!pl)
-		goto enomem;
-
-	/*
-	 * Write zero size of the map, if omap values are found -
-	 * will update the value later.
-	 */
-	ret = ceph_pagelist_encode_32(pl, 0);
-	if (ret)
-		goto err;
-
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		/* Last bits and we are done */
-		goto finish;
-
-	/*
-	 * Lookup for omaps greater than 'after', thus GT.
-	 */
-	ome = lookup_omap_entry_gt(&obj->o_omap, after);
-
-	for (cnt = 0; ome && cnt < max; cnt++) {
-		/* Encode key */
-		ret = ceph_pagelist_encode_string(pl, ome->e_key,
-						  ome->e_key_len);
-		if (ret)
-			goto err;
-
-		/* Get the next node */
-		ome = rb_entry_safe(rb_next(&ome->e_node),
-				    typeof(*ome), e_node);
-	}
-
-	/* Do we have more? */
-	more = (ome && cnt == max);
-
-	if (cnt) {
-		/* Write down map size at 0 offset */
-		ret = ceph_pagelist_encode_32_at_offset(pl, cnt, 0);
-		if (ret)
-			goto err;
-	}
-
-finish:
-	ret = ceph_pagelist_encode_8(pl, more);
-	if (ret)
-		goto err;
-
-	/* Setup output length */
-	op->outdata_len = pl->length;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_pagelist_init(&op->raw_data, pl);
-
-	kfree(after_str);
-
-	return 0;
-
-err:
-	kfree(after_str);
-	if (pl)
-		ceph_pagelist_release(pl);
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-}
-
-__attribute__((unused))
-static int handle_osd_op_getxattr(struct ceph_osds_msg *m,
-				  struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_omap_entry *ome;
-	struct ceph_osds_object *obj;
-	struct ceph_pagelist *pl = NULL;
-	int ret;
-
-	char *key = NULL;
-
-	key = cursor_decode_safe_strn(in_cur, GFP_KERNEL, op->xattr.name_len,
-				      einval, enomem);
-	if (!key)
-		goto einval;
-
-	pl = ceph_pagelist_alloc(GFP_KERNEL);
-	if (!pl)
-		goto enomem;
-
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj)
-		goto einval;
-
-	ome = lookup_omap_entry(&obj->o_xattrs, key);
-	if (!ome)
-		goto enodata;
-
-	/* Encode value */
-	ret = ceph_pagelist_encode_pagelist(pl, ome->e_val_pl, false);
-	if (ret)
-		goto err;
-
-	/* Setup output length */
-	op->outdata_len = pl->length;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_pagelist_init(&op->raw_data, pl);
-
-	kfree(key);
-
-	return 0;
-
-err:
-	kfree(key);
-	if (pl)
-		ceph_pagelist_release(pl);
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-
-enodata:
-	ret = -ENODATA;
-	goto err;
 }
 
 static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
@@ -2107,77 +1195,6 @@ static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
 				&m->req.hoid, &m->req.mtime, op);
 }
 
-__attribute__((unused))
-static int handle_osd_op_setxattr__REMOVE_ASAP(struct ceph_osds_msg *m,
-				  struct ceph_osd_req_op *op)
-{
-	struct ceph_msg_data_cursor *in_cur = &op->incur;
-	struct ceph_osds_omap_entry *ome;
-	struct ceph_osds_object *obj;
-	size_t val_len;
-	int ret;
-
-	char *key = NULL;
-
-	key = cursor_decode_safe_strn(in_cur, GFP_KERNEL, op->xattr.name_len,
-				      einval, enomem);
-	if (!key)
-		goto einval;
-
-	/* Find or create an object */
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (!obj) {
-		obj = ceph_create_and_insert_object(m->pg, &m->req);
-		if (!obj)
-			goto enomem;
-	}
-
-	/* Find or create new xattr */
-	ome = lookup_omap_entry(&obj->o_xattrs, key);
-	if (!ome) {
-		ome = ceph_create_and_insert_omap(&obj->o_xattrs, key);
-		if (!ome)
-			goto enomem;
-	}
-
-	/* Get value size */
-	val_len = op->xattr.value_len;
-
-	/* Reserve enough to keep new value */
-	if (val_len > ome->e_val_pl->length) {
-		ret = ceph_pagelist_reserve(ome->e_val_pl,
-					    val_len - ome->e_val_pl->length);
-		if (ret)
-			goto err;
-	}
-
-	/* Copy value */
-	ret = ceph_pagelist_copy_from_cursor(ome->e_val_pl, in_cur,
-					     val_len);
-	/* Should be preallocated, thus no error expected */
-	WARN_ON(ret);
-
-	/* In case old value was bigger than the new one */
-	ret = ceph_pagelist_truncate(ome->e_val_pl, val_len);
-	WARN_ON(ret);
-
-	kfree(key);
-
-	return 0;
-
-err:
-	kfree(key);
-	return ret;
-
-einval:
-	ret = -EINVAL;
-	goto err;
-
-enomem:
-	ret = -ENOMEM;
-	goto err;
-}
-
 static int handle_osd_op_create(struct ceph_osds_msg *m,
 				struct ceph_osd_req_op *op)
 {
@@ -2186,23 +1203,6 @@ static int handle_osd_op_create(struct ceph_osds_msg *m,
 		return -EEXIST;
 
 	return ceph_recreate_obj_info(m);
-}
-
-__attribute__((unused))
-static int handle_osd_op_create__REMOVE_ASAP(struct ceph_osds_msg *m,
-				struct ceph_osd_req_op *op)
-{
-	struct ceph_osds_object *obj;
-
-	obj = ceph_lookup_object(m->pg, &m->req);
-	if (obj)
-		return op->flags & CEPH_OSD_OP_FLAG_EXCL ? -EEXIST : 0;
-
-	obj = ceph_create_and_insert_object(m->pg, &m->req);
-	if (!obj)
-		return -ENOMEM;
-
-	return 0;
 }
 
 static int handle_osd_op(struct ceph_osds_msg *m,
@@ -2528,41 +1528,6 @@ static void ceph_stop_osd_server(struct ceph_osd_server *osds)
 		pr_notice(">>>> Tear down osd.%d\n", osds->osd);
 }
 
-static void destroy_blocks(struct ceph_osds_object *obj)
-{
-	struct ceph_osds_block *blk;
-
-	while ((blk = rb_entry_safe(rb_first(&obj->o_blocks),
-				    typeof(*blk), b_node))) {
-		erase_object_block_by_off(&obj->o_blocks, blk);
-		__free_pages(blk->b_page, OSDS_BLOCK_SHIFT - PAGE_SHIFT);
-		kfree(blk);
-	}
-}
-
-static void __destroy_omap(struct rb_root *root)
-{
-	struct ceph_osds_omap_entry *ome;
-
-	while ((ome = rb_entry_safe(rb_first(root),
-				    typeof(*ome), e_node))) {
-		erase_omap_entry(root, ome);
-		ceph_pagelist_release(ome->e_val_pl);
-		kfree(ome->e_key);
-		kfree(ome);
-	}
-}
-
-static void destroy_omap(struct ceph_osds_object *obj)
-{
-	__destroy_omap(&obj->o_omap);
-}
-
-static void destroy_xattrs(struct ceph_osds_object *obj)
-{
-	__destroy_omap(&obj->o_xattrs);
-}
-
 static void destroy_objs_info(struct rb_root *root)
 {
 	struct ceph_osds_obj_info *obj;
@@ -2574,27 +1539,12 @@ static void destroy_objs_info(struct rb_root *root)
 	}
 }
 
-static void destroy_objects(struct rb_root *root)
-{
-	struct ceph_osds_object *obj;
-
-	while ((obj = rb_entry_safe(rb_first(root),
-				    typeof(*obj), o_node))) {
-		destroy_blocks(obj);
-		destroy_omap(obj);
-		destroy_xattrs(obj);
-		erase_object_by_hoid(root, obj);
-		kfree(obj);
-	}
-}
-
 static void destroy_pgs(struct ceph_osd_server *osds)
 {
 	struct ceph_osds_pg *pg;
 
 	while ((pg = rb_entry_safe(rb_first(&osds->pgs),
 				   typeof(*pg), node))) {
-		destroy_objects(&pg->objects);
 		destroy_objs_info(&pg->objs_info);
 		erase_pg(&osds->pgs, pg);
 		kfree(pg);
