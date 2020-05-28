@@ -52,6 +52,13 @@ struct ceph_osds_pg {
 	struct rb_node         node;     /* node of ->pgs */
 	struct ceph_spg        spg;
 	struct rb_root         objects;  /* all objects */
+	struct rb_root         objs_info;/* all objects info structures */
+};
+
+struct ceph_osds_obj_info {
+	struct rb_node         node;    /* node of ->objs_info */
+	struct ceph_hobject_id hoid;    /* object hoid */
+	bool                   exists;  /* does object really exists */
 };
 
 struct ceph_osds_msg {
@@ -59,6 +66,8 @@ struct ceph_osds_msg {
 	struct work_struct     work;
 	struct ceph_msg_osd_op req;
 	struct ceph_osds_pg    *pg;
+	struct ceph_osds_obj_info
+			       *obj_info;
 
 	struct ceph_osd_req_op *ops_arr[CEPH_OSD_MAX_OPS]; /* additional ops */
 	struct ceph_osd_req_op **ops;
@@ -108,6 +117,11 @@ struct ceph_osds_omap_entry {
 /* Define RB functions for collection lookup and insert by spg */
 DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
 		 ceph_spg_compare, RB_BYPTR, struct ceph_spg *,
+		 node);
+
+/* Define RB functions for object infos lookup and insert by hoid */
+DEFINE_RB_FUNCS2(obj_info, struct ceph_osds_obj_info, hoid,
+		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
 		 node);
 
 /**
@@ -322,12 +336,52 @@ again:
 	/* TODO: PG structure is not bound to the store, only in cache */
 
 	pg->objects = RB_ROOT;
+	pg->objs_info = RB_ROOT;
 	RB_CLEAR_NODE(&pg->node);
 	pg->spg = m->req.spg;
 	insert_pg(&osds->pgs, pg);
 
 out:
 	m->pg = pg;
+
+	return 0;
+}
+
+static void ceph_get_obj_info(struct ceph_osds_msg *m)
+{
+	struct ceph_osds_pg *pg = m->pg;
+
+	m->obj_info = lookup_obj_info(&pg->objs_info, &m->req.hoid);
+};
+
+__attribute__((unused))
+static int ceph_recreate_obj_info(struct ceph_osds_msg *m)
+{
+	struct ceph_osds_obj_info *obj_info = m->obj_info;
+	struct ceph_osds_pg *pg = m->pg;
+
+	if (likely(obj_info))
+		goto mark_as_existing;
+
+	obj_info = lookup_obj_info(&pg->objs_info, &m->req.hoid);
+	if (likely(obj_info))
+		goto cache_obj_info;
+
+	obj_info = kzalloc(sizeof(*obj_info), GFP_KERNEL);
+	if (unlikely(!obj_info))
+		return -ENOMEM;
+
+	/* TODO: obj_info structure is not bound to the store, only in cache */
+
+	RB_CLEAR_NODE(&obj_info->node);
+	ceph_hoid_init(&obj_info->hoid);
+	ceph_hoid_copy(&obj_info->hoid, &m->req.hoid);
+	insert_obj_info(&pg->objs_info, obj_info);
+
+cache_obj_info:
+	m->obj_info = obj_info;
+mark_as_existing:
+	obj_info->exists = true;
 
 	return 0;
 }
@@ -2135,6 +2189,9 @@ static void handle_osd_ops(struct ceph_connection *con,
 	if (unlikely(ret))
 		goto send_reply;
 
+	/* Get and cache object info for the current message */
+	ceph_get_obj_info(m);
+
 	/* Init iterator for input data, ->data_length can be 0 */
 	ceph_msg_data_cursor_init(&in_cur, m->msg.data, WRITE,
 				  m->msg.data_length);
@@ -2396,6 +2453,17 @@ static void destroy_xattrs(struct ceph_osds_object *obj)
 	__destroy_omap(&obj->o_xattrs);
 }
 
+static void destroy_objs_info(struct rb_root *root)
+{
+	struct ceph_osds_obj_info *obj;
+
+	while ((obj = rb_entry_safe(rb_first(root),
+				    typeof(*obj), node))) {
+		erase_obj_info(root, obj);
+		kfree(obj);
+	}
+}
+
 static void destroy_objects(struct rb_root *root)
 {
 	struct ceph_osds_object *obj;
@@ -2417,6 +2485,7 @@ static void destroy_pgs(struct ceph_osd_server *osds)
 	while ((pg = rb_entry_safe(rb_first(&osds->pgs),
 				   typeof(*pg), node))) {
 		destroy_objects(&pg->objects);
+		destroy_objs_info(&pg->objs_info);
 		erase_pg(&osds->pgs, pg);
 		kfree(pg);
 	}
