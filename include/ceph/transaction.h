@@ -15,9 +15,8 @@ enum {
 struct ceph_transaction_op {
 	struct ceph_spg             spg;
 	struct ceph_hobject_id      hoid;
-	struct timespec64           mtime;
-	struct ceph_osd_req_op      *op;
 	int                         type;
+	struct ceph_osd_req_op      *op;
 };
 
 struct ceph_transaction {
@@ -33,7 +32,6 @@ void ceph_transaction_deinit(struct ceph_transaction *txn);
 int ceph_transaction_add_osd_op(struct ceph_transaction *txn,
 				struct ceph_spg *spg,
 				struct ceph_hobject_id *hoid,
-				struct timespec64 *mtime,
 				struct ceph_osd_req_op *op);
 
 int ceph_transaction_mkcoll(struct ceph_transaction *txn,

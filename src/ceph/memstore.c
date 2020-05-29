@@ -37,7 +37,6 @@ struct ceph_memstore_obj {
 	struct rb_root         omap;    /* omap of the object */
 	struct rb_root         xattrs;  /* xattr of the object */
 	size_t                 size;    /* size of an object */
-	struct timespec64      mtime;   /* modification time of an object */
 };
 
 struct ceph_memstore_blk {
@@ -247,7 +246,6 @@ static inline int next_dst(struct ceph_osd_req_op *op,
 
 static int handle_osd_op_write(struct ceph_memstore_coll *coll,
 			       struct ceph_hobject_id *hoid,
-			       struct timespec64 *mtime,
 			       struct ceph_osd_req_op *op,
 			       const struct ceph_msg_data_cursor *in_cur)
 {
@@ -318,8 +316,6 @@ static int handle_osd_op_write(struct ceph_memstore_coll *coll,
 out:
 	if (modified) {
 		bool truncate = (op->op == CEPH_OSD_OP_WRITEFULL);
-
-		obj->mtime = *mtime;
 
 		/* Extend object size if needed or truncate */
 		if (dst_off > obj->size || truncate)
@@ -463,44 +459,6 @@ static int handle_osd_op_read(struct ceph_memstore_coll *coll,
 	if (len_read)
 		/* Zero out the rest */
 		memset(p + off_inpg, 0, len_read);
-
-	return 0;
-}
-
-static int handle_osd_op_stat(struct ceph_memstore_coll *coll,
-			      struct ceph_hobject_id *hoid,
-			      struct ceph_osd_req_op *op)
-{
-	struct ceph_memstore_obj *obj;
-	struct ceph_bvec_iter it;
-	struct ceph_timespec ts;
-	size_t outdata_len;
-	void *p;
-	int ret;
-
-	/* Find an object */
-	obj = lookup_object(&coll->objects, hoid);
-	if (!obj)
-		return -ENOENT;
-
-	outdata_len = 8 + sizeof(ts);
-
-	/* Allocate bvec for the read chunk */
-	ret = alloc_bvec(&it, outdata_len);
-	if (ret)
-		return ret;
-
-	/* Setup output length */
-	op->outdata_len = outdata_len;
-	op->outdata = &op->raw_data;
-
-	/* Give ownership to msg */
-	ceph_msg_data_bvecs_init(&op->raw_data, &it, 1, true);
-
-	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
-	ceph_encode_timespec64(&ts, &obj->mtime);
-	ceph_encode_64(&p, obj->size);
-	ceph_encode_copy(&p, &ts, sizeof(ts));
 
 	return 0;
 }
@@ -1098,9 +1056,6 @@ static int execute_ro_osd_op(struct ceph_store_coll *c,
 	case CEPH_OSD_OP_SPARSE_READ:
 		ret = handle_osd_op_read(coll, hoid, op);
 		break;
-	case CEPH_OSD_OP_STAT:
-		ret = handle_osd_op_stat(coll, hoid, op);
-		break;
 	case CEPH_OSD_OP_OMAPGETVALS:
 		ret = handle_osd_op_omapgetvals(coll, hoid, op, in_cur);
 		break;
@@ -1129,7 +1084,6 @@ static int execute_wr_osd_op(struct ceph_memstore *store,
 {
 	const struct ceph_msg_data_cursor *in_cur = &txn_op->op->incur;
 	struct ceph_hobject_id *hoid = &txn_op->hoid;
-	struct timespec64 *mtime = &txn_op->mtime;
 	struct ceph_osd_req_op *op = txn_op->op;
 	struct ceph_memstore_coll *coll;
 	int ret;
@@ -1141,7 +1095,7 @@ static int execute_wr_osd_op(struct ceph_memstore *store,
 	switch (op->op) {
 	case CEPH_OSD_OP_WRITE:
 	case CEPH_OSD_OP_WRITEFULL:
-		ret = handle_osd_op_write(coll, hoid, mtime, op, in_cur);
+		ret = handle_osd_op_write(coll, hoid, op, in_cur);
 		break;
 	case CEPH_OSD_OP_OMAPSETVALS:
 		ret = handle_osd_op_omapsetvals(coll, hoid, op, in_cur);

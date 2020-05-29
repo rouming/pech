@@ -51,6 +51,8 @@ struct ceph_osds_obj_info {
 	struct rb_node         node;    /* node of ->objs_info */
 	struct ceph_hobject_id hoid;    /* object hoid */
 	bool                   exists;  /* does object really exists */
+	size_t                 size;    /* size of an object */
+	struct timespec64      mtime;   /* modification time of an object */
 };
 
 struct ceph_osds_msg {
@@ -306,6 +308,9 @@ mark_as_existing:
 					     &m->req.hoid);
 		if (unlikely(ret))
 			return ret;
+
+		obj_info->size = 0;
+		memset(&obj_info->mtime, 0, sizeof(obj_info->mtime));
 	}
 	obj_info->exists = true;
 
@@ -826,8 +831,54 @@ static int handle_osd_op_write(struct ceph_osds_msg *m,
 	if (unlikely(ret))
 		return ret;
 
+	m->obj_info->mtime = m->req.mtime;
+
+	if (op->op == CEPH_OSD_OP_WRITEFULL)
+		m->obj_info->size = op->extent.length;
+	else
+		m->obj_info->size =
+			max_t(size_t, op->extent.offset + op->extent.length,
+			      m->obj_info->size);
+
 	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
-				&m->req.hoid, &m->req.mtime, op);
+					   &m->req.hoid, op);
+}
+
+static int handle_osd_op_stat(struct ceph_osds_msg *m,
+			      struct ceph_osd_req_op *op)
+{
+	struct ceph_osds_obj_info *obj_info;
+	struct ceph_bvec_iter it;
+	struct ceph_timespec ts;
+	size_t outdata_len;
+	void *p;
+	int ret;
+
+	/* Find an object */
+	obj_info = lookup_obj_info(&m->pg->objs_info, &m->req.hoid);
+	if (!obj_info)
+		return -ENOENT;
+
+	outdata_len = 8 + sizeof(ts);
+
+	/* Allocate bvec for the read chunk */
+	ret = alloc_bvec(&it, outdata_len);
+	if (ret)
+		return ret;
+
+	/* Setup output length */
+	op->outdata_len = outdata_len;
+	op->outdata = &op->raw_data;
+
+	/* Give ownership to msg */
+	ceph_msg_data_bvecs_init(&op->raw_data, &it, 1, true);
+
+	p = page_address(mp_bvec_iter_page(it.bvecs, it.iter));
+	ceph_encode_timespec64(&ts, &obj_info->mtime);
+	ceph_encode_64(&p, obj_info->size);
+	ceph_encode_copy(&p, &ts, sizeof(ts));
+
+	return 0;
 }
 
 struct osds_cls_call_ctx {
@@ -1179,7 +1230,7 @@ static int handle_osd_op_omapsetvals(struct ceph_osds_msg *m,
 		return ret;
 
 	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
-				&m->req.hoid, &m->req.mtime, op);
+					   &m->req.hoid, op);
 }
 
 static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
@@ -1192,7 +1243,7 @@ static int handle_osd_op_setxattr(struct ceph_osds_msg *m,
 		return ret;
 
 	return ceph_transaction_add_osd_op(&m->txn, &m->req.spg,
-				&m->req.hoid, &m->req.mtime, op);
+					   &m->req.hoid, op);
 }
 
 static int handle_osd_op_create(struct ceph_osds_msg *m,
@@ -1232,10 +1283,11 @@ static int handle_osd_op(struct ceph_osds_msg *m,
 	/* Read ops, immediate execution */
 
 	case CEPH_OSD_OP_STAT:
+		ret = handle_osd_op_stat(m, op);
+		break;
 	case CEPH_OSD_OP_READ:
 	case CEPH_OSD_OP_SYNC_READ:
 	case CEPH_OSD_OP_SPARSE_READ:
-	case CEPH_OSD_OP_STAT:
 	case CEPH_OSD_OP_OMAPGETVALS:
 	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
 	case CEPH_OSD_OP_OMAPGETKEYS:
