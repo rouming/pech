@@ -56,7 +56,6 @@ static struct ceph_transaction_op *add_trans_op(struct ceph_transaction *txn)
 int ceph_transaction_add_osd_op(struct ceph_transaction *txn,
 				struct ceph_spg *spg,
 				struct ceph_hobject_id *hoid,
-				struct timespec64 *mtime,
 				struct ceph_osd_req_op *op)
 {
 	struct ceph_transaction_op *txn_op;
@@ -67,7 +66,6 @@ int ceph_transaction_add_osd_op(struct ceph_transaction *txn,
 
 	txn_op->type = TXN_OP_OSD;
 	txn_op->spg = *spg;
-	txn_op->mtime = *mtime;
 	txn_op->op = op;
 
 	ceph_hoid_init(&txn_op->hoid);
