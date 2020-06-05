@@ -77,6 +77,7 @@ struct ceph_osds_con {
 };
 
 struct ceph_osd_server {
+	struct ceph_options    *opt;
 	struct ceph_client     *client;
 	int                    osd;
 	struct ceph_cls_loader class_loader;
@@ -1516,31 +1517,17 @@ struct ceph_osd_server *
 ceph_create_osd_server(struct ceph_options *opt, int osd)
 {
 	struct ceph_osd_server *osds;
-	struct ceph_client *client;
-	int ret;
 
 	osds = kzalloc(sizeof(*osds), GFP_KERNEL);
 	if (unlikely(!osds))
 		return ERR_PTR(-ENOMEM);
 
+	osds->opt = opt;
 	osds->osd = osd;
 	osds->pgs = RB_ROOT;
 	ceph_cls_init(&osds->class_loader, opt);
 
-	client = __ceph_create_client(opt, osds, CEPH_ENTITY_TYPE_OSD,
-				      osd, CEPH_FEATURES_SUPPORTED_OSD,
-				      CEPH_FEATURES_REQUIRED_OSD);
-	if (unlikely(IS_ERR(client))) {
-		ret = PTR_ERR(client);
-		goto err;
-	}
-	osds->client = client;
-
 	return osds;
-
-err:
-	kfree(osds);
-	return ERR_PTR(ret);
 }
 
 static void ceph_stop_osd_server(struct ceph_osd_server *osds)
@@ -1602,14 +1589,16 @@ static void destroy_pgs(struct ceph_osd_server *osds)
 
 void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 {
-	ceph_stop_osd_server(osds);
-	flush_workqueue(osds->dispatch_wq);
-	ceph_destroy_client(osds->client);
-	ceph_store_destroy(osds->store);
-	destroy_pgs(osds);
-	ceph_cls_deinit(&osds->class_loader);
-	destroy_workqueue(osds->dispatch_wq);
-	kmem_cache_destroy(osds->msg_cache);
+	if (osds->client) {
+		ceph_stop_osd_server(osds);
+		flush_workqueue(osds->dispatch_wq);
+		ceph_destroy_client(osds->client);
+		ceph_store_destroy(osds->store);
+		destroy_pgs(osds);
+		ceph_cls_deinit(&osds->class_loader);
+		destroy_workqueue(osds->dispatch_wq);
+		kmem_cache_destroy(osds->msg_cache);
+	}
 	kfree(osds);
 }
 
@@ -1617,15 +1606,25 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 {
 	unsigned long _300ms = msecs_to_jiffies(300);
 	unsigned long _5s    = msecs_to_jiffies(5000);
+	struct ceph_client *client;
 	unsigned long started;
 
-	struct ceph_client *client = osds->client;
 	bool is_up;
 	int ret;
 
+	client = __ceph_create_client(osds->opt, osds, CEPH_ENTITY_TYPE_OSD,
+				      osds->osd, CEPH_FEATURES_SUPPORTED_OSD,
+				      CEPH_FEATURES_REQUIRED_OSD);
+	if (unlikely(IS_ERR(client)))
+		return PTR_ERR(client);
+
+	osds->client = client;
+
 	osds->msg_cache = KMEM_CACHE(ceph_osds_msg, 0);
-	if (unlikely(!osds->msg_cache))
-		return -ENOMEM;
+	if (unlikely(!osds->msg_cache)) {
+		ret = -ENOMEM;
+		goto destroy_client;
+	}
 
 	/*
 	 * In order to schedule dispatch workfn immediately WQ_HIGHPRI
@@ -1702,6 +1701,9 @@ destroy_store:
 	ceph_store_destroy(osds->store);
 free_cache:
 	kmem_cache_destroy(osds->msg_cache);
+destroy_client:
+	ceph_destroy_client(osds->client);
+	osds->client = NULL;
 
 	return ret;
 }
