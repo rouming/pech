@@ -936,15 +936,19 @@ static int ceph_monc_send_command_and_wait(struct ceph_mon_client *monc,
 	struct ceph_mon_command *h;
 	va_list args;
 
-	/* 256 bytes should be enough */
-	const size_t max_sz = 256;
-
 	int ret = -ENOMEM;
+	size_t max_sz;
 	int len;
 
 	req = alloc_generic_request(monc, GFP_NOIO);
 	if (!req)
 		goto out;
+
+	va_start(args, format);
+	max_sz = vsnprintf(NULL, 0, format, args);
+	va_end(args);
+
+	max_sz += sizeof(*h) + 1;
 
 	req->request = ceph_msg_new(CEPH_MSG_MON_COMMAND, max_sz, GFP_NOIO,
 				    true);
@@ -967,11 +971,6 @@ static int ceph_monc_send_command_and_wait(struct ceph_mon_client *monc,
 	len = vsnprintf(h->str, max_sz - sizeof(*h), format, args);
 	va_end(args);
 	h->str_len = cpu_to_le32(len);
-
-	if (WARN_ON(len >= max_sz)) {
-		ret = -EOVERFLOW;
-		goto out;
-	}
 
 	mutex_lock(&monc->mutex);
 	register_generic_request(req);
@@ -1047,6 +1046,7 @@ int ceph_monc_osd_boot(struct ceph_mon_client *monc, int osd_id,
 			.osd_fsid              = *osd_fsid,
 		},
 	};
+	const size_t max_sz = 512;
 
 	struct ceph_mon_generic_request *req;
 	void *p, *end;
@@ -1067,12 +1067,13 @@ int ceph_monc_osd_boot(struct ceph_mon_client *monc, int osd_id,
 	if (!req)
 		goto out;
 
-	req->request = ceph_msg_new(CEPH_MSG_OSD_BOOT, 512,
+	req->request = ceph_msg_new(CEPH_MSG_OSD_BOOT, max_sz,
 				    GFP_NOIO, true);
 	if (!req->request)
 		goto out;
 
 	cmd = req->request->front.iov_base;
+	memset(cmd, 0, max_sz);
 	*cmd = osd_boot_cmd;
 
 	p = cmd + 1;
@@ -1130,6 +1131,7 @@ int ceph_monc_osd_mark_me_down(struct ceph_mon_client *monc, int osd_id)
 	};
 
 	struct ceph_mon_generic_request *req;
+	const size_t max_sz = 256;
 	void *p, *end;
 	int ret;
 
@@ -1145,12 +1147,13 @@ int ceph_monc_osd_mark_me_down(struct ceph_mon_client *monc, int osd_id)
 	if (!req)
 		return ret;
 
-	req->request = ceph_msg_new(CEPH_MSG_OSD_MARK_ME_DOWN, 256,
+	req->request = ceph_msg_new(CEPH_MSG_OSD_MARK_ME_DOWN, max_sz,
 				    GFP_NOIO, true);
 	if (!req->request)
 		goto out;
 
 	cmd = req->request->front.iov_base;
+	memset(cmd, 0, max_sz);
 	*cmd = osd_mark_me_down_cmd;
 
 	p = cmd + 1;
