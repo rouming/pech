@@ -382,6 +382,8 @@ bad:
 static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 			     struct ceph_osd_req_op *src)
 {
+	memset(dst, 0, sizeof(*dst));
+
 	switch (src->op) {
 	case CEPH_OSD_OP_STAT:
 		break;
