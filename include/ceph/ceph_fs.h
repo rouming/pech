@@ -155,6 +155,8 @@ struct ceph_dir_layout {
 #define CEPH_MSG_OSD_BOOT               71
 #define CEPH_MSG_OSD_MARK_ME_DOWN       74
 #define CEPH_MSG_OSD_BEACON             79
+#define CEPH_MSG_OSD_REPOP              112
+#define CEPH_MSG_OSD_REPOPREPLY         113
 
 /* watch-notify operations */
 enum {

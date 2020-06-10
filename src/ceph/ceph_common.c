@@ -95,6 +95,8 @@ const char *ceph_msg_type_name(int type)
 	case CEPH_MSG_OSD_OPREPLY: return "osd_opreply";
 	case CEPH_MSG_WATCH_NOTIFY: return "watch_notify";
 	case CEPH_MSG_OSD_BACKOFF: return "osd_backoff";
+	case CEPH_MSG_OSD_REPOP: return "osd_repop";
+	case CEPH_MSG_OSD_REPOPREPLY: return "osd_repopreply";
 	default: return "unknown";
 	}
 }
