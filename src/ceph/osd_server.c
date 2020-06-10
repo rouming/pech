@@ -45,6 +45,8 @@ struct ceph_osds_pg {
 	struct ceph_store_coll *coll;
 	struct ceph_spg        spg;
 	struct rb_root         objs_info;/* all objects info structures */
+	struct rb_root         repops;   /* all repops waiting for ACKs */
+	u64                    next_tid;
 };
 
 struct ceph_osds_obj_info {
@@ -63,6 +65,7 @@ struct ceph_osds_msg {
 	struct ceph_osds_obj_info
 			       *obj_info;
 
+	int                    nr_acks; /* number of ACKs awaited for */
 	struct ceph_transaction txn;
 
 	struct ceph_osd_req_op *ops_arr[CEPH_OSD_MAX_OPS]; /* additional ops */
@@ -71,9 +74,21 @@ struct ceph_osds_msg {
 	int                    nr_ops;
 };
 
+struct ceph_osds_repop_msg {
+	struct ceph_msg        msg;       /* should be the first in the struct */
+	struct ceph_osds_msg   *orig_msg; /* original request */
+	struct rb_node         node;      /* node of ->repops */
+	u64                    tid;
+};
+
 struct ceph_osds_con {
 	struct ceph_connection con;
-	struct kref ref;
+	union {
+		struct rb_node   node;  /* node of ->osds_cons */
+		struct list_head entry; /* entry of ->accepted_cons */
+	};
+	struct kref            ref;
+	struct ceph_entity_addr addr;
 };
 
 struct ceph_osd_server {
@@ -82,11 +97,55 @@ struct ceph_osd_server {
 	int                    osd;
 	struct ceph_cls_loader class_loader;
 	struct ceph_store      *store;
-	struct rb_root         pgs;        /* all pgs */
+	struct list_head       accepted_cons; /* accepted connections */
+	struct rb_root         pgs;           /* all pgs */
+	struct rb_root         osds_cons;     /* connected osds */
 	struct workqueue_struct
 			       *dispatch_wq;
 	struct kmem_cache      *msg_cache;
+	struct kmem_cache      *repop_msg_cache;
 };
+
+static int ceph_entity_addr_compare(struct ceph_entity_addr *a_,
+				    struct ceph_entity_addr *b_)
+{
+	struct sockaddr_storage a = a_->in_addr;
+	struct sockaddr_storage b = b_->in_addr;
+	struct sockaddr_in *a4 = (struct sockaddr_in *)&a;
+	struct sockaddr_in *b4 = (struct sockaddr_in *)&b;
+	struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&a;
+	struct sockaddr_in6 *b6 = (struct sockaddr_in6 *)&b;
+
+	int res;
+
+	if (a.ss_family != b.ss_family)
+		return a.ss_family - b.ss_family;
+
+	switch (a.ss_family) {
+	case AF_INET:
+		if ((res = memcmp(&a4->sin_addr, &b4->sin_addr,
+				  sizeof(a4->sin_addr))))
+			return res;
+		if (a4->sin_port != b4->sin_port)
+			return a4->sin_port - b4->sin_port;
+
+		return 0;
+
+	case AF_INET6:
+		if ((res = memcmp(&a6->sin6_addr, &b6->sin6_addr,
+				  sizeof(a6->sin6_addr))))
+			return res;
+		if (a6->sin6_port != b6->sin6_port)
+			return a6->sin6_port - b6->sin6_port;
+
+		return 0;
+
+	default:
+		WARN_ON(0);
+		return memcmp(&a, &b, sizeof(a));
+	}
+}
+
 
 /* Define RB functions for collection lookup and insert by spg */
 DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
@@ -97,6 +156,14 @@ DEFINE_RB_FUNCS2(pg, struct ceph_osds_pg, spg,
 DEFINE_RB_FUNCS2(obj_info, struct ceph_osds_obj_info, hoid,
 		 ceph_hoid_compare, RB_BYPTR, struct ceph_hobject_id *,
 		 node);
+
+/* Define RB functions for osds connections lookup and insert by addr */
+DEFINE_RB_FUNCS2(osds_con, struct ceph_osds_con, addr,
+		 ceph_entity_addr_compare, RB_BYPTR, struct ceph_entity_addr *,
+		 node);
+
+/* Define RB functions for repops lookup and insert by tid */
+DEFINE_RB_FUNCS(repop, struct ceph_osds_repop_msg, tid, node);
 
 static int handle_osd_op(struct ceph_osds_msg *osds_msg,
 			 struct ceph_osd_req_op *op);
@@ -258,6 +325,7 @@ deinit_txn:
 	/* TODO: PG structure is not bound to the store, only in cache */
 
 	pg->objs_info = RB_ROOT;
+	pg->repops = RB_ROOT;
 	RB_CLEAR_NODE(&pg->node);
 	pg->spg = m->req.spg;
 	pg->coll = coll;
@@ -320,7 +388,11 @@ mark_as_existing:
 
 static int osds_accept_con(struct ceph_connection *con)
 {
-	pr_err("@@ con %p\n", con);
+	struct ceph_osd_server *osds = con_to_osds(con);
+	struct ceph_osds_con *osds_con;
+
+	osds_con = container_of(con, typeof(*osds_con), con);
+	list_add_tail(&osds_con->entry, &osds->accepted_cons);
 
 	return 0;
 }
@@ -351,8 +423,15 @@ static struct ceph_connection *osds_con_get(struct ceph_connection *con)
 static void osds_free_con(struct kref *ref)
 {
 	struct ceph_osds_con *osds_con;
+	struct ceph_osd_server *osds;
 
 	osds_con = container_of(ref, typeof(*osds_con), ref);
+
+	osds = con_to_osds(&osds_con->con);
+	if (ceph_con_is_client(&osds_con->con))
+		erase_osds_con(&osds->osds_cons, osds_con);
+	else
+		list_del(&osds_con->entry);
 	kfree(osds_con);
 }
 
@@ -362,6 +441,91 @@ static void osds_con_put(struct ceph_connection *con)
 
 	osds_con = container_of(con, typeof(*osds_con), con);
 	kref_put(&osds_con->ref, osds_free_con);
+}
+
+static int decode_hoid(void **p, void *end, struct ceph_hobject_id *hoid)
+{
+	struct ceph_string *str;
+	u8 struct_v;
+	u32 struct_len;
+	int ret, strlen;
+
+	ret = ceph_start_decoding(p, end, 4, "hobject_t", &struct_v,
+				  &struct_len);
+	if (ret)
+		return ret;
+
+	if (struct_v < 4) {
+		pr_err("got struct_v %d < 4 of hobject_t\n", struct_v);
+		goto e_inval;
+	}
+
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		str = ceph_find_or_create_string(*p, strlen);
+		*p += strlen;
+		if (!str)
+			goto e_inval;
+	} else {
+		str = NULL;
+	}
+	hoid->key = str;
+
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		ret = ceph_oid_aprintf(&hoid->oid, GFP_NOIO,
+				       "%.*s", strlen, *p);
+		*p += strlen;
+		if (ret)
+			goto e_inval;
+	}
+
+	ceph_decode_64_safe(p, end, hoid->snapid, e_inval);
+	ceph_decode_32_safe(p, end, hoid->hash, e_inval);
+	ceph_decode_8_safe(p, end, hoid->is_max, e_inval);
+
+	ceph_decode_32_safe(p, end, strlen, e_inval);
+	if (strlen) {
+		ceph_decode_need(p, end, strlen, e_inval);
+		str = ceph_find_or_create_string(*p, strlen);
+		*p += strlen;
+		if (!str)
+			goto e_inval;
+	} else {
+		str = NULL;
+	}
+	hoid->nspace = str;
+
+	ceph_decode_64_safe(p, end, hoid->pool, e_inval);
+
+	ceph_hoid_build_hash_cache(hoid);
+	return 0;
+
+e_inval:
+	return -EINVAL;
+}
+
+static int hoid_encoding_size(const struct ceph_hobject_id *hoid)
+{
+	return 8 + 4 + 1 + 8 + /* snapid, hash, is_max, pool */
+	       4 + ceph_string_len(hoid->key) + 4 + hoid->oid.name_len +
+	       4 + ceph_string_len(hoid->nspace);
+}
+
+static void encode_hoid(void **p, void *end, const struct ceph_hobject_id *hoid)
+{
+	ceph_start_encoding(p, 4, 3, hoid_encoding_size(hoid));
+	ceph_encode_string(p, end, ceph_string_ptr(hoid->key),
+			   ceph_string_len(hoid->key));
+	ceph_encode_string(p, end, hoid->oid.name, hoid->oid.name_len);
+	ceph_encode_64(p, hoid->snapid);
+	ceph_encode_32(p, hoid->hash);
+	ceph_encode_8(p, hoid->is_max);
+	ceph_encode_string(p, end, ceph_string_ptr(hoid->nspace),
+			   ceph_string_len(hoid->nspace));
+	ceph_encode_64(p, hoid->pool);
 }
 
 static int encode_pgid(void **p, void *end, const struct ceph_pg *pgid)
@@ -375,6 +539,20 @@ static int encode_pgid(void **p, void *end, const struct ceph_pg *pgid)
 
 bad:
 	return -EINVAL;
+}
+
+static int spg_encoding_size(void)
+{
+	return 1 + 1 + 4 +     /* encoding block */
+	       1 + 8 + 4 + 4 + /* pgid */
+	       1;              /* shard */
+}
+
+static void encode_spg(void **p, void *end, const struct ceph_spg *spgid)
+{
+	ceph_start_encoding(p, 1, 1, CEPH_PGID_ENCODING_LEN + 1);
+	encode_pgid(p, end, &spgid->pgid);
+	ceph_encode_8(p, spgid->shard);
 }
 
 static int decode_spg(void **p, void *end, struct ceph_spg *spg)
@@ -474,6 +652,11 @@ static u32 osd_req_encode_op(struct ceph_osd_op *dst,
 		dst->copy_from.flags = src->copy_from.flags;
 		dst->copy_from.src_fadvise_flags =
 			cpu_to_le32(src->copy_from.src_fadvise_flags);
+		break;
+	case CEPH_OSD_OP_OMAPGETVALS:
+	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
+	case CEPH_OSD_OP_OMAPSETVALS:
+	case CEPH_OSD_OP_OMAPGETKEYS:
 		break;
 	default:
 		pr_err("%s: unsupported osd opcode 0x%x '%s'\n", __func__,
@@ -609,6 +792,61 @@ bad:
 	return NULL;
 }
 
+static struct ceph_msg *
+create_osd_repopreply(struct ceph_msg_osd_op *req,
+		      int result, u32 epoch, int acktype)
+{
+	struct ceph_msg *msg;
+	u64 flags;
+	size_t msg_size;
+	void *p, *end;
+
+	flags  = req->flags;
+	flags &= ~(CEPH_OSD_FLAG_ONDISK|CEPH_OSD_FLAG_ONNVRAM|CEPH_OSD_FLAG_ACK);
+	flags |= acktype;
+
+	msg_size = 0;
+
+	msg_size += spg_encoding_size();
+	msg_size += 4; /* epoch */
+	msg_size += 4; /* flags */
+	msg_size += 4; /* result */
+
+	/* TODO: add more reply fields */
+
+	msg = ceph_msg_new2(CEPH_MSG_OSD_REPOPREPLY, msg_size,
+			    0, GFP_KERNEL, false);
+	if (!msg)
+		return NULL;
+
+	msg->hdr.version = cpu_to_le16(1);
+	msg->hdr.tid = cpu_to_le64(req->tid);
+
+	p = msg->front.iov_base;
+	end = p + msg->front.iov_len;
+
+	encode_spg(&p, end, &req->spg);
+	ceph_encode_32(&p, req->epoch);
+	ceph_encode_32(&p, req->flags);
+	ceph_encode_32(&p, result);
+
+	return msg;
+}
+
+static void free_repop_msg(struct ceph_msg *msg)
+{
+	struct ceph_osds_repop_msg *osds_rep;
+	struct ceph_osds_pg *pg;
+
+	/* Message itself starts at the beginning of the struct */
+	BUILD_BUG_ON(offsetof(typeof(*osds_rep), msg) != 0);
+	osds_rep = container_of(msg, typeof(*osds_rep), msg);
+	pg = osds_rep->orig_msg->pg;
+	ceph_msg_put(&osds_rep->orig_msg->msg);
+	if (!RB_EMPTY_NODE(&osds_rep->node))
+		erase_repop(&pg->repops, osds_rep);
+}
+
 static void init_msg_osd_op(struct ceph_msg_osd_op *req)
 {
 	ceph_oloc_init(&req->oloc);
@@ -708,6 +946,11 @@ static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
 		dst->copy_from.src_fadvise_flags =
 			le32_to_cpu(src->copy_from.src_fadvise_flags);
 		dst->copy_from.osd_data.type = CEPH_MSG_DATA_NONE;
+		break;
+	case CEPH_OSD_OP_OMAPGETVALS:
+	case CEPH_OSD_OP_OMAPGETVALSBYKEYS:
+	case CEPH_OSD_OP_OMAPSETVALS:
+	case CEPH_OSD_OP_OMAPGETKEYS:
 		break;
 	default:
 		pr_err("%s: unsupported osd opcode 0x%x '%s'\n", __func__,
@@ -816,6 +1059,247 @@ static int ceph_decode_msg_osd_op(const struct ceph_msg *msg,
 	/* XXX Should be something valid? */
 	req->hoid.key = NULL;
 	req->hoid.nspace = ceph_get_string(req->oloc.pool_ns);
+
+	return 0;
+err:
+	return ret;
+bad:
+	ret = -EINVAL;
+	goto err;
+}
+
+static size_t transaction_encoding_size(const struct ceph_transaction *txn,
+					int *nr_osd_ops)
+{
+	const struct ceph_transaction_op *txn_op;
+	size_t size, hoid_size = 0;
+	int i, osd_ops;
+
+	osd_ops = 0;
+	for (i = 0; i < txn->nr_ops; i++) {
+		txn_op = txn->ops[i];
+		osd_ops += (txn_op->type == TXN_OP_OSD);
+
+		hoid_size += 1 + 1 + 4; /* encoding block */
+		hoid_size += hoid_encoding_size(&txn_op->hoid);
+	}
+
+	size = 0;
+	size += 4;               /* nr_ops */
+	size += 4 * txn->nr_ops; /* ->type */
+	size += spg_encoding_size() * txn->nr_ops;
+	size += sizeof(struct ceph_osd_op) * osd_ops;
+	size += hoid_size;
+
+	*nr_osd_ops = osd_ops;
+
+	return size;
+}
+
+static int transaction_encode(const struct ceph_transaction *txn,
+			      void **p, void *end,
+			      struct ceph_msg *msg)
+{
+	const struct ceph_transaction_op *txn_op;
+	struct ceph_osd_op raw_op;
+	int i;
+
+	ceph_encode_32(p, txn->nr_ops);
+
+	for (i = 0; i < txn->nr_ops; i++) {
+		txn_op = txn->ops[i];
+
+		ceph_encode_32(p, txn_op->type);
+		encode_spg(p, end, &txn_op->spg);
+		encode_hoid(p, end, &txn_op->hoid);
+
+		if (txn_op->type == TXN_OP_OSD) {
+			osd_req_encode_op(&raw_op, txn_op->op);
+			ceph_encode_copy(p, &raw_op, sizeof(raw_op));
+			ceph_msg_data_add_nested_cursor(msg,
+					&txn_op->op->incur);
+		}
+	}
+	msg->hdr.data_len = cpu_to_le32(msg->data_length);
+
+	return 0;
+}
+
+static int transaction_decode(void **p, void *end,
+			      const struct ceph_msg *msg,
+			      struct ceph_msg_osd_op *req,
+			      struct ceph_transaction *txn)
+{
+	struct ceph_msg_data_cursor in_cur;
+	int ret, i, nr_ops;
+
+	ceph_decode_32_safe(p, end, nr_ops, bad);
+
+	/* Expect empty request */
+	BUG_ON(req->num_ops);
+
+	if (WARN_ON(nr_ops > ARRAY_SIZE(req->ops)))
+		/* Do not want to allocate anything, reuse ops from req */
+		return -EINVAL;
+
+	/* Init iterator for input data */
+	ceph_msg_data_cursor_init(&in_cur, msg->data, WRITE,
+				  msg->data_length);
+
+	for (i = 0; i < nr_ops; i++) {
+		struct ceph_hobject_id hoid;
+		struct ceph_spg spg;
+		int type;
+
+		ceph_hoid_init(&hoid);
+
+		ceph_decode_32_safe(p, end, type, bad);
+		ret = decode_spg(p, end, &spg);
+		if (unlikely(ret))
+			goto err;
+
+		ret = decode_hoid(p, end, &hoid);
+		if (unlikely(ret))
+			goto err;
+
+		if (type == TXN_OP_OSD) {
+			struct ceph_osd_req_op *op;
+
+			op = &req->ops[req->num_ops++];
+
+			ret = osd_req_decode_op(p, end, op);
+			if (unlikely(ret))
+				goto err;
+
+			/* Cache cursor and advance on indata_len */
+			op->incur = in_cur;
+
+			ret = ceph_transaction_add_osd_op(txn, &spg,
+							  &hoid, op);
+
+			if (op->indata_len)
+				ceph_msg_data_cursor_advance(&in_cur,
+							op->indata_len);
+		} else if (type == TXN_OP_TOUCH) {
+			ret = ceph_transaction_touch(txn, &spg,
+						     &hoid);
+		} else if (type == TXN_OP_MKCOLL) {
+			ret = ceph_transaction_mkcoll(txn, &spg);
+		} else {
+			pr_err("%s: unknown transaction type %d\n",
+			       __func__, type);
+			ret = -EINVAL;
+		}
+		if (unlikely(ret))
+			goto err;
+	}
+
+	return 0;
+
+bad:
+	ret = -EINVAL;
+err:
+	return ret;
+}
+
+static struct ceph_osds_repop_msg *
+create_osd_repop(struct ceph_osds_msg *m, u64 tid, u32 epoch, int acktype)
+{
+	struct ceph_osd_server *osds = con_to_osds(m->msg.con);
+	struct ceph_msg_osd_op *req = &m->req;
+
+	struct ceph_osds_repop_msg *osds_rep;
+	struct ceph_msg *msg;
+	int ret, nr_osd_ops;
+	size_t msg_size;
+	void *p, *end;
+
+	msg_size = 0;
+
+	msg_size += spg_encoding_size();
+	msg_size += 4; /* epoch */
+	msg_size += 4; /* flags */
+	msg_size += transaction_encoding_size(&m->txn, &nr_osd_ops);
+
+	msg = ceph_msg_new3(osds->repop_msg_cache, CEPH_MSG_OSD_REPOP,
+			    msg_size, nr_osd_ops, GFP_KERNEL, false);
+	if (unlikely(!msg))
+		return NULL;
+
+	p = msg->front.iov_base;
+	end = p + msg->front.iov_len;
+
+	encode_spg(&p, end, &req->spg);
+	ceph_encode_32(&p, req->epoch);
+	ceph_encode_32(&p, req->flags);
+
+	ret = transaction_encode(&m->txn, &p, end, msg);
+	if (unlikely(ret)) {
+		pr_err("%s: failed to encode transaction, ret=%d\n",
+		       __func__, ret);
+		return NULL;
+	}
+
+	/* Message itself starts at the beginning of the struct */
+	BUILD_BUG_ON(offsetof(typeof(*osds_rep), msg) != 0);
+	osds_rep = container_of(msg, typeof(*osds_rep), msg);
+
+	ceph_msg_get(&m->msg);
+	osds_rep->orig_msg = m;
+	osds_rep->tid = tid;
+	RB_CLEAR_NODE(&osds_rep->node);
+
+	msg->free_msg = free_repop_msg;
+	msg->hdr.tid = cpu_to_le64(tid);
+
+	return osds_rep;
+}
+
+static int ceph_decode_msg_repop(const struct ceph_msg *msg,
+				 struct ceph_msg_osd_op *req,
+				 struct ceph_transaction *txn)
+{
+	void *p, *end;
+	int ret;
+
+	p = msg->front.iov_base;
+	end = p + msg->front.iov_len;
+
+	req->tid = le64_to_cpu(msg->hdr.tid);
+
+	ret = decode_spg(&p, end, &req->spg); /* actual spg */
+	if (ret)
+		goto bad;
+
+	ceph_decode_32_safe(&p, end, req->epoch, bad);
+	ceph_decode_32_safe(&p, end, req->flags, bad);
+
+	return transaction_decode(&p, end, msg, req, txn);
+bad:
+	return -EINVAL;
+}
+
+static int ceph_decode_msg_repopreply(const struct ceph_msg *msg,
+				      struct ceph_msg_osd_op *req)
+{
+	void *p, *end;
+	int ret, result;
+
+	p = msg->front.iov_base;
+	end = p + msg->front.iov_len;
+
+	req->tid = le64_to_cpu(msg->hdr.tid);
+
+	ret = decode_spg(&p, end, &req->spg); /* actual spg */
+	if (ret)
+		goto err;
+
+	ceph_decode_32_safe(&p, end, req->epoch, bad);
+	ceph_decode_32_safe(&p, end, req->flags, bad);
+	ceph_decode_32_safe(&p, end, result, bad);
+
+	/* TODO: use repop result */
+	(void)result;
 
 	return 0;
 err:
@@ -1325,13 +1809,332 @@ static int handle_osd_op(struct ceph_osds_msg *m,
 	return ret;
 }
 
+static void create_and_send_reply(struct ceph_connection *con,
+				  struct ceph_osds_msg *m, int ret)
+{
+	struct ceph_osd_client *osdc = con_to_osdc(con);
+	struct ceph_msg *reply;
+
+	int type;
+
+	type = le16_to_cpu(m->msg.hdr.type);
+
+	switch (type) {
+	case CEPH_MSG_OSD_OP:
+		reply = create_osd_op_reply(&m->req, ret, osdc->osdmap->epoch,
+			  /* TODO: Not actually clear to me when to set those */
+			  CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+		break;
+	case CEPH_MSG_OSD_REPOP:
+		reply = create_osd_repopreply(&m->req, ret, osdc->osdmap->epoch,
+			  /* TODO: Not actually clear to me when to set those */
+			  CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+		break;
+	default:
+		BUG();
+	}
+
+	if (unlikely(!reply)) {
+		pr_err("%s: con %p, failed to allocate a reply\n",
+		       __func__, con);
+		return;
+	}
+
+	ceph_con_send(con, reply);
+}
+
+static struct ceph_osds_con *
+lookup_create_osds_con(struct ceph_osd_server *osds, int osd)
+{
+	struct ceph_osds_con *osds_con;
+	struct ceph_entity_addr *addr;
+
+	addr = ceph_osd_addr(osds->client->osdc.osdmap, osd);
+	if (!addr) {
+		pr_err("%s: incorrect osd %d\n", __func__, osd);
+		return NULL;
+	}
+
+	osds_con = lookup_osds_con(&osds->osds_cons, addr);
+	if (!osds_con) {
+		osds_con = kmalloc(sizeof(*osds_con),
+				   GFP_KERNEL | __GFP_NOFAIL);
+		if (unlikely(!osds_con)) {
+			pr_err("%s: no memory\n", __func__);
+
+			return NULL;
+		}
+		RB_CLEAR_NODE(&osds_con->node);
+		kref_init(&osds_con->ref);
+		osds_con->addr = *addr;
+
+		ceph_con_init(&osds_con->con, osds_con, &osds_con_ops,
+			      &osds->client->msgr);
+		insert_osds_con(&osds->osds_cons, osds_con);
+		ceph_con_open(&osds_con->con, CEPH_ENTITY_TYPE_OSD, osd, addr);
+	}
+
+	return osds_con;
+}
+
+static bool i_am_primary(struct ceph_osd_server *osds,
+			 struct ceph_osds *acting)
+{
+	return (osds->osd == acting->primary);
+}
+
+static bool i_am_last_in_chain(struct ceph_osd_server *osds,
+			       struct ceph_osds *acting)
+{
+	BUG_ON(!acting->size);
+	return (osds->osd == acting->osds[acting->size-1]);
+}
+
+static void create_and_send_reply_to(struct ceph_osd_server *osds, int osd,
+				     struct ceph_osds_msg *m, int ret)
+{
+	struct ceph_osds_con *osds_con;
+
+	osds_con = lookup_create_osds_con(osds, osd);
+	if (likely(osds_con))
+		create_and_send_reply(&osds_con->con, m, ret);
+}
+
+static void forward_req_to_all_secondaries(struct ceph_osd_server *osds,
+					   struct ceph_osds *acting,
+					   struct ceph_osds_msg *m)
+{
+	struct ceph_osd_client *osdc = con_to_osdc(m->msg.con);
+	struct ceph_osds_con *osds_con;
+	struct ceph_osds_repop_msg *rep;
+	int i, nr, ret;
+	u64 tid;
+
+	struct {
+		struct ceph_osds_repop_msg *rep;
+		struct ceph_connection     *con;
+	} msg_arr[16];
+
+	BUG_ON(!i_am_primary(osds, acting));
+
+	/* Array size seems should be big enough for all the cases */
+	if (WARN_ON(acting->size > ARRAY_SIZE(msg_arr))) {
+		ret = -EINVAL;
+		goto reply_with_error;
+	}
+
+	for (i = 0, nr = 0; i < acting->size; i++) {
+		int osd;
+
+		osd = acting->osds[i];
+		if (osd == acting->primary)
+			/* Skip ourselves */
+			continue;
+
+		osds_con = lookup_create_osds_con(osds, osd);
+		if (unlikely(!osds_con)) {
+			pr_err("%s: can't create osds_con\n", __func__);
+			ret = -ENOMEM;
+			goto reply_with_error;
+		}
+
+		/* Bump tid up */
+		tid = ++m->pg->next_tid;
+
+		rep = create_osd_repop(m, tid, osdc->osdmap->epoch,
+			  /* TODO: Not actually clear to me when to set those */
+			  CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+
+		if (unlikely(!rep)) {
+			pr_err("%s: failed to allocate a replication msg\n",
+			       __func__);
+			ret = -ENOMEM;
+			goto reply_with_error;
+		}
+
+		msg_arr[nr].rep = rep;
+		msg_arr[nr].con = &osds_con->con;
+		nr++;
+	}
+
+	/* All replicated messages are created, ready to fan them out */
+
+	BUG_ON(!nr);
+	m->nr_acks = nr;
+	ceph_msg_get(&m->msg);
+
+	for (i = 0; i < nr; i++) {
+		struct ceph_osds_repop_msg *rep = msg_arr[i].rep;
+		struct ceph_connection *con = msg_arr[i].con;
+
+		ceph_msg_get(&rep->msg);
+		insert_repop(&m->pg->repops, rep);
+		ceph_con_send(con, &rep->msg);
+	}
+
+	return;
+
+reply_with_error:
+	create_and_send_reply(m->msg.con, m, ret);
+}
+
+static void forward_req_to_next(struct ceph_osd_server *osds,
+				struct ceph_osds *acting,
+				struct ceph_osds_msg *m)
+{
+	struct ceph_osd_client *osdc = con_to_osdc(m->msg.con);
+	struct ceph_osds_con *osds_con = NULL;
+	struct ceph_osds_repop_msg *rep;
+	bool primary;
+	int i, ret;
+	u64 tid;
+
+	for (i = 0; i < acting->size; i++) {
+		int osd;
+
+		osd = acting->osds[i];
+		if (osd != osds->osd)
+			continue;
+
+		/* Get the next OSD in round-robin */
+		osd = acting->osds[++i % acting->size];
+		osds_con = lookup_create_osds_con(osds, osd);
+		if (unlikely(!osds_con)) {
+			pr_err("%s: can't create osds_con\n", __func__);
+			ret = -ENOMEM;
+			goto reply_with_error;
+		}
+		break;
+	}
+	BUG_ON(!osds_con);
+
+	primary = i_am_primary(osds, acting);
+	if (primary) {
+		/* Bump tid up */
+		tid = ++m->pg->next_tid;
+	} else {
+		BUG_ON(le16_to_cpu(m->msg.hdr.type) != CEPH_MSG_OSD_REPOP);
+		tid = m->req.tid;
+	}
+
+	rep = create_osd_repop(m, tid, osdc->osdmap->epoch,
+			  /* TODO: Not actually clear to me when to set those */
+			  CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+
+	if (unlikely(!rep)) {
+		pr_err("%s: failed to allocate a replication msg\n",
+		       __func__);
+		ret = -ENOMEM;
+		goto reply_with_error;
+	}
+
+	if (primary) {
+		/* Wait for a single ACK */
+		m->nr_acks = 1;
+		ceph_msg_get(&m->msg);
+		ceph_msg_get(&rep->msg);
+		insert_repop(&m->pg->repops, rep);
+	}
+	ceph_con_send(&osds_con->con, &rep->msg);
+
+	return;
+
+reply_with_error:
+	create_and_send_reply(m->msg.con, m, ret);
+}
+
+static bool osdmap_acting_osds(struct ceph_connection *con,
+			       struct ceph_pg *pgid,
+			       struct ceph_osds *acting)
+{
+	struct ceph_osd_client *osdc = con_to_osdc(con);
+	struct ceph_pg_pool_info *pi;
+	struct ceph_osds up;
+
+	pi = ceph_pg_pool_by_id(osdc->osdmap, pgid->pool);
+	if (!pi)
+		return false;
+
+	ceph_pg_to_up_acting_osds(osdc->osdmap, pi, pgid, &up, acting);
+
+	return true;
+}
+
+static void replicate_osd_ops(struct ceph_connection *con,
+			      struct ceph_osds_msg *m, int ret)
+{
+	struct ceph_osd_server *osds = con_to_osds(con);
+	struct ceph_osds acting;
+
+	int repl_model = osds->client->options->replication;
+
+	if (!m->txn.nr_ops) {
+		/* No transaction ops, no replication */
+		create_and_send_reply(con, m, ret);
+		return;
+	}
+
+	if (!osdmap_acting_osds(con, &m->req.spg.pgid, &acting)) {
+		pr_err("%s: failed to get acting OSDs\n", __func__);
+		create_and_send_reply(con, m, -ENOENT);
+		return;
+	}
+
+	/* Simply exclude all corner cases when we have < 2 osd in pg */
+	if (acting.size < 2)
+		repl_model = CEPH_REP_NONE;
+
+	if (unlikely(ret)) {
+		/* Error path */
+
+		switch (repl_model) {
+		case CEPH_REP_CHAIN:
+			if (i_am_primary(osds, &acting))
+				create_and_send_reply(con, m, ret);
+			else
+				/* Chain is broken, reply to primary */
+				create_and_send_reply_to(osds, acting.primary,
+							 m, ret);
+			break;
+		case CEPH_REP_PRIMARY_COPY:
+		case CEPH_REP_NONE:
+			create_and_send_reply(con, m, ret);
+			break;
+		default:
+			BUG();
+		}
+	} else {
+		/* Success path */
+
+		switch (repl_model) {
+		case CEPH_REP_NONE:
+			create_and_send_reply(con, m, ret);
+			break;
+		case CEPH_REP_PRIMARY_COPY:
+			if (i_am_primary(osds, &acting))
+				forward_req_to_all_secondaries(osds,
+							&acting, m);
+			else
+				create_and_send_reply(con, m, ret);
+			break;
+		case CEPH_REP_CHAIN:
+			if (i_am_last_in_chain(osds, &acting))
+				create_and_send_reply_to(osds, acting.primary,
+							 m, ret);
+			else
+				forward_req_to_next(osds, &acting, m);
+			break;
+		default:
+			BUG();
+		}
+	}
+}
+
 static void handle_osd_ops(struct ceph_connection *con,
 			   struct ceph_osds_msg *m)
 {
 	struct ceph_osd_server *osds = con_to_osds(con);
-	struct ceph_osd_client *osdc = con_to_osdc(con);
 	struct ceph_msg_data_cursor in_cur;
-	struct ceph_msg *reply;
 	int ret, i;
 
 	/* See osds_alloc_msg(), we gather input in a single data */
@@ -1347,7 +2150,7 @@ static void handle_osd_ops(struct ceph_connection *con,
 	/* Get and cache PG for the current message */
 	ret = ceph_get_or_create_pg(con, m);
 	if (unlikely(ret))
-		goto send_reply;
+		goto replicate;
 
 	/* Get and cache object info for the current message */
 	ceph_get_obj_info(m);
@@ -1380,19 +2183,82 @@ static void handle_osd_ops(struct ceph_connection *con,
 	/* Execute accumulated ops in one transaction */
 	ceph_store_execute_transaction(osds->store, &m->txn);
 
-send_reply:
-	/* Create reply message */
-	reply = create_osd_op_reply(&m->req, ret, osdc->osdmap->epoch,
-			/* TODO: Not actually clear to me when to set those */
-			CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+replicate:
+	replicate_osd_ops(con, m, ret);
+}
 
-	if (unlikely(!reply)) {
-		pr_err("%s: con %p, failed to allocate a reply\n",
-		       __func__, con);
+static void handle_osd_repop(struct ceph_connection *con,
+			     struct ceph_osds_msg *m)
+{
+	struct ceph_osd_server *osds = con_to_osds(con);
+	int ret;
+
+	/* See osds_alloc_msg(), we gather input in a single data */
+	BUG_ON(m->msg.num_data_items > 1);
+
+	ret = ceph_decode_msg_repop(&m->msg, &m->req, &m->txn);
+	if (unlikely(ret)) {
+		pr_err("%s: con %p, failed to decode a message, ret=%d\n",
+		       __func__, con, ret);
 		return;
 	}
 
-	ceph_con_send(con, reply);
+	/* Get and cache PG for the current message */
+	ret = ceph_get_or_create_pg(con, m);
+	if (unlikely(ret))
+		goto replicate;
+
+	/* Execute accumulated ops in one transaction */
+	ceph_store_execute_transaction(osds->store, &m->txn);
+
+replicate:
+	replicate_osd_ops(con, m, ret);
+}
+
+static void handle_osd_repopreply(struct ceph_connection *con,
+				  struct ceph_osds_msg *m)
+{
+	struct ceph_osds_repop_msg *rep;
+	struct ceph_osds_msg *orig_msg;
+	u64 tid;
+	int ret;
+
+	ret = ceph_decode_msg_repopreply(&m->msg, &m->req);
+	if (unlikely(ret)) {
+		pr_err("%s: con %p, failed to decode a message, ret=%d\n",
+		       __func__, con, ret);
+		return;
+	}
+
+	/* Get and cache PG for the current message */
+	ret = ceph_get_or_create_pg(con, m);
+	if (unlikely(ret))
+		return;
+
+	tid = le64_to_cpu(m->msg.hdr.tid);
+	rep = lookup_repop(&m->pg->repops, tid);
+	if (unlikely(!rep)) {
+		pr_err("%s: failed to lookup for repop, tid %lld\n",
+		       __func__, tid);
+		return;
+	}
+
+	orig_msg = rep->orig_msg;
+
+	/* Put repop message */
+	ceph_msg_put(&rep->msg);
+
+	if (WARN_ON(!orig_msg->nr_acks))
+		return;
+
+	if (!--orig_msg->nr_acks) {
+		/* Got all ACKs, ready to reply back to the originator */
+
+		/* TODO: accumulate return code from each replica */
+
+		create_and_send_reply(orig_msg->msg.con, orig_msg, 0);
+		ceph_msg_put(&orig_msg->msg);
+	}
 }
 
 static void osds_dispatch(struct ceph_connection *con, struct ceph_msg *msg)
@@ -1418,6 +2284,12 @@ static void osds_dispatch_workfn(struct work_struct *work)
 	switch (type) {
 	case CEPH_MSG_OSD_OP:
 		handle_osd_ops(msg->con, osds_msg);
+		break;
+	case CEPH_MSG_OSD_REPOP:
+		handle_osd_repop(msg->con, osds_msg);
+		break;
+	case CEPH_MSG_OSD_REPOPREPLY:
+		handle_osd_repopreply(msg->con, osds_msg);
 		break;
 	default:
 		pr_err("@@ message type %d, \"%s\"\n", type,
@@ -1487,6 +2359,8 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_OSD_BACKOFF:
 	case CEPH_MSG_WATCH_NOTIFY:
 	case CEPH_MSG_OSD_OP:
+	case CEPH_MSG_OSD_REPOP:
+	case CEPH_MSG_OSD_REPOPREPLY:
 		return alloc_msg_with_bvec(osds, hdr);
 	case CEPH_MSG_OSD_OPREPLY:
 		/* fall through */
@@ -1530,6 +2404,8 @@ ceph_create_osd_server(struct ceph_options *opt, int osd)
 	osds->opt = opt;
 	osds->osd = osd;
 	osds->pgs = RB_ROOT;
+	osds->osds_cons = RB_ROOT;
+	INIT_LIST_HEAD(&osds->accepted_cons);
 	ceph_cls_init(&osds->class_loader, opt);
 
 	return osds;
@@ -1592,10 +2468,35 @@ static void destroy_pgs(struct ceph_osd_server *osds)
 	}
 }
 
+static void destroy_osds_cons(struct ceph_osd_server *osds)
+{
+	struct ceph_osds_con *osds_con;
+
+	while ((osds_con = rb_entry_safe(rb_first(&osds->osds_cons),
+					 typeof(*osds_con), node))) {
+		ceph_con_close(&osds_con->con);
+		erase_osds_con(&osds->osds_cons, osds_con);
+		kfree(osds_con);
+	}
+}
+
+static void destroy_accepted_cons(struct ceph_osd_server *osds)
+{
+	struct ceph_osds_con *osds_con, *tmp;
+
+	list_for_each_entry_safe(osds_con, tmp, &osds->accepted_cons, entry) {
+		ceph_con_close(&osds_con->con);
+		list_del(&osds_con->entry);
+		kfree(osds_con);
+	}
+}
+
 void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 {
 	if (osds->client) {
 		ceph_stop_osd_server(osds);
+		destroy_accepted_cons(osds);
+		destroy_osds_cons(osds);
 		flush_workqueue(osds->dispatch_wq);
 		ceph_destroy_client(osds->client);
 		ceph_store_destroy(osds->store);
@@ -1603,6 +2504,7 @@ void ceph_destroy_osd_server(struct ceph_osd_server *osds)
 		ceph_cls_deinit(&osds->class_loader);
 		destroy_workqueue(osds->dispatch_wq);
 		kmem_cache_destroy(osds->msg_cache);
+		kmem_cache_destroy(osds->repop_msg_cache);
 	}
 	kfree(osds);
 }
@@ -1626,7 +2528,8 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 	osds->client = client;
 
 	osds->msg_cache = KMEM_CACHE(ceph_osds_msg, 0);
-	if (unlikely(!osds->msg_cache)) {
+	osds->repop_msg_cache = KMEM_CACHE(ceph_osds_repop_msg, 0);
+	if (unlikely(!osds->msg_cache || !osds->repop_msg_cache)) {
 		ret = -ENOMEM;
 		goto destroy_client;
 	}
@@ -1706,6 +2609,7 @@ destroy_store:
 	ceph_store_destroy(osds->store);
 free_cache:
 	kmem_cache_destroy(osds->msg_cache);
+	kmem_cache_destroy(osds->repop_msg_cache);
 destroy_client:
 	ceph_destroy_client(osds->client);
 	osds->client = NULL;
