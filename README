@@ -22,7 +22,14 @@ What Pech OSD does?
 
   o Connects to monitors and "boots" OSD, i.e. marks it as UP.
   o On Ctrl+C marks OSD on monitors as DOWN and gracefully exits.
-  o OSD operations supported in memory:
+  o Requests supported by Pech OSD:
+
+     Replication requets between OSDs:
+
+     - OSD_REPOP
+     - OSD_REPOPREPLY
+
+     OSD operations supported in memory:
 
      - OP_WRITE
      - OP_WRITEFULL
@@ -55,6 +62,22 @@ What Pech OSD does?
   `make ceph_pech_proxy` should be called in order to build it. When
   everything is built and `class_dir` is specified rbd.fio load should
   work just fine.
+
+  Currently two replication models are supported: "primary-copy",
+  "chain" (see further "replication" argument description). Pech OSD
+  does not support any failover (at least yet), so consider current
+  state of replication as "childish". But Pech OSD already follows
+  transaction semantics and all object mutation operations are
+  replicated on other OSDs in one transaction request. This can be
+  already useful and can be tested on a real cluster.
+
+  There is also one replication mode which is called "client-based"
+  replication, namely client is responsible for data replication.
+  Pech OSD checks any of CEPH_MSG_OSD_OP request on existence of
+  CEPH_OSD_FLAG_DONT_REPLICATE flag, and if any - Pech OSD mutates
+  objects locally without attempt to replicate and replies the result
+  back. In this way, client should be responsible for marking request
+  with DONT_REPLICATE flag and doing the replication.
 
 What is not yet ported from kernel sources?
 
@@ -93,16 +116,38 @@ Restart only Ceph monitor(s):
 
 Start pech-osd accessing monitor over v1 protocol:
 
-  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` \
-    log_level=5
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+                name=$OSD fsid=`cat ./osd$OSD/fsid` log_level=5
 
 For the case when RBD images are required Pech proxy should be built
 and `class_dir` should be specified:
 
-  $ ./pech-osd mon_addrs=ip.ip.ip.ip:50001 name=0 fsid=`cat ./osd0/fsid` \
-    class_dir=$CEPH/build/lib log_level=5
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+                name=$OSD fsid=`cat ./osd$OSD/fsid` \
+                class_dir=$CEPH/build/lib log_level=5
 
 For DEBUG purposes maximum output log level can be specified: log_level=7
+
+Replication model can be specified with "replication" argument, for example:
+
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+                name=$OSD fsid=`cat ./osd$OSD/fsid` \
+                class_dir=$CEPH/build/lib log_level=5 replication=primary-copy
+
+so "primary-copy" or "chain" are supported for now.
+
+Beware: "client-based" replication model should be enabled on client
+        side, in other words a client is responsible for marking the
+        OP_WRITE or OP_WRITEFULL request with a special flag and then
+        forward it to all replicas. In order to test network
+        throughput on client-based replication a modified rbd kernel
+        module can be taken [3] and then device can be mapped with a
+        special option: "-o client_based_replication":
+
+           rbd device map rbd/fio_test -o nocrc -o client_based_replication
+
+        rbd tool requires a small patch which is here [2].
+
 
 Have fun!
 
@@ -111,3 +156,4 @@ Roman
 
 [1] https://lists.ceph.io/hyperkitty/list/dev@ceph.io/thread/N46NR7NBHWBQL4B2ASU7Y2LMKZZPK3IX/
 [2] https://github.com/rouming/ceph/tree/pech-osd
+[3] https://github.com/rouming/linux/tree/akpm--ceph-client-based-replication
