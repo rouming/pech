@@ -71,6 +71,9 @@ struct kmem_cache *kmem_cache_create(const char *name, unsigned int size,
 static inline
 void kmem_cache_destroy(struct kmem_cache *c)
 {
+	if (unlikely(!c))
+		return;
+
 	WARN_ON(c->alloced);
 	free(c);
 }
