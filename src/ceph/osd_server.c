@@ -374,6 +374,34 @@ bad:
 	return -EINVAL;
 }
 
+static int decode_spg(void **p, void *end, struct ceph_spg *spg)
+{
+	void *beg;
+	u32 struct_len = 0;
+	u8 struct_v = 0;
+	int ret;
+
+	ret = ceph_start_decoding(p, end, 1, "pgid", &struct_v, &struct_len);
+	beg = *p;
+	if (!ret)
+		ret = ceph_decode_pgid(p, end, &spg->pgid);
+	if (!ret)
+		ceph_decode_8_safe(p, end, spg->shard, bad);
+
+	if (!ret) {
+		if (beg + struct_len < *p) {
+			pr_warn("%s: corrupted structure, len=%d\n",
+				__func__, struct_len);
+			goto bad;
+		}
+		*p = beg + struct_len;
+	}
+
+	return ret;
+bad:
+	return -EINVAL;
+}
+
 /*
  * XXX Unify with the same function from osd_client, with one
  * XXX exception: here we are replying, thus using ->outdata_len
@@ -590,34 +618,6 @@ static void deinit_msg_osd_op(struct ceph_msg_osd_op *req)
 	ceph_oloc_destroy(&req->oloc);
 	ceph_hoid_destroy(&req->hoid);
 	kfree(req->snaps);
-}
-
-static int decode_spg(void **p, void *end, struct ceph_spg *spg)
-{
-	void *beg;
-	u32 struct_len = 0;
-	u8 struct_v = 0;
-	int ret;
-
-	ret = ceph_start_decoding(p, end, 1, "pgid", &struct_v, &struct_len);
-	beg = *p;
-	if (!ret)
-		ret = ceph_decode_pgid(p, end, &spg->pgid);
-	if (!ret)
-		ceph_decode_8_safe(p, end, spg->shard, bad);
-
-	if (!ret) {
-		if (beg + struct_len < *p) {
-			pr_warn("%s: corrupted structure, len=%d\n",
-				__func__, struct_len);
-			goto bad;
-		}
-		*p = beg + struct_len;
-	}
-
-	return ret;
-bad:
-	return -EINVAL;
 }
 
 static int osd_req_decode_op(void **p, void *end, struct ceph_osd_req_op *dst)
