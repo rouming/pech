@@ -397,6 +397,12 @@ static bool con_is_client(struct ceph_connection *con)
 	return con->role == CON_CLIENT;
 }
 
+bool ceph_con_is_client(struct ceph_connection *con)
+{
+	return con_is_client(con);
+}
+EXPORT_SYMBOL(ceph_con_is_client);
+
 /*
  * socket callback functions
  */

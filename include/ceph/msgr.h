@@ -71,7 +71,6 @@ struct ceph_entity_inst {
 	struct ceph_entity_addr addr;
 } __attribute__ ((packed));
 
-
 /* used by message exchange protocol */
 #define CEPH_MSGR_TAG_READY         1  /* server->client: ready for messages */
 #define CEPH_MSGR_TAG_RESETSESSION  2  /* server->client: reset, try again */
