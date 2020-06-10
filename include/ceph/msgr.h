@@ -71,6 +71,11 @@ struct ceph_entity_inst {
 	struct ceph_entity_addr addr;
 } __attribute__ ((packed));
 
+static inline int ceph_entity_addr_compare(struct ceph_entity_addr *a,
+					   struct ceph_entity_addr *b)
+{
+	return memcmp(a, b, sizeof(*a));
+}
 
 /* used by message exchange protocol */
 #define CEPH_MSGR_TAG_READY         1  /* server->client: ready for messages */

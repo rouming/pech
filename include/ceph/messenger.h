@@ -411,6 +411,7 @@ extern void ceph_con_open(struct ceph_connection *con,
 			  __u8 entity_type, __u64 entity_num,
 			  struct ceph_entity_addr *addr);
 extern bool ceph_con_opened(struct ceph_connection *con);
+extern bool ceph_con_is_client(struct ceph_connection *con);
 extern void ceph_con_close(struct ceph_connection *con);
 extern void ceph_con_send(struct ceph_connection *con, struct ceph_msg *msg);
 
