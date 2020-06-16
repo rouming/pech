@@ -406,6 +406,8 @@ enum {
 	CEPH_OSD_FLAG_KNOWN_REDIR = 0x400000,  /* redirect bit is authoritative */
 	CEPH_OSD_FLAG_FULL_TRY =    0x800000,  /* try op despite full flag */
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
+
+	CEPH_OSD_FLAG_DONT_REPLICATE = 0x10000000,  /* do not replicate */
 };
 
 enum {

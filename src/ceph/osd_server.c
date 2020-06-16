@@ -2084,6 +2084,10 @@ static void replicate_osd_ops(struct ceph_connection *con,
 	if (acting.size < 2)
 		repl_model = CEPH_REP_NONE;
 
+	/* Sweet, client does everything on his own */
+	if (m->req.flags & CEPH_OSD_FLAG_DONT_REPLICATE)
+		repl_model = CEPH_REP_NONE;
+
 	if (unlikely(ret)) {
 		/* Error path */
 
