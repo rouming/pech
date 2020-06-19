@@ -263,6 +263,7 @@ enum {
 	Opt_secret,
 	Opt_key,
 	Opt_ip,
+	Opt_server_ip,
 	Opt_class_dir,
 	Opt_replication,
 	/* string args above */
@@ -284,6 +285,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_flag_no ("hdrcrc",			Opt_hdrcrc),
 	fsparam_string	("fsid",			Opt_fsid),
 	fsparam_string	("ip",				Opt_ip),
+	fsparam_string	("server_ip",			Opt_server_ip),
 	fsparam_string	("key",				Opt_key),
 	fsparam_u32	("mount_timeout",		Opt_mount_timeout),
 	fsparam_string	("name",			Opt_name),
@@ -398,7 +400,7 @@ int ceph_parse_mon_ips(const char *buf, size_t len, struct ceph_options *opt,
 
 	/* ip1[:port1][,ip2[:port2]...] */
 	ret = ceph_parse_ips(buf, buf + len, opt->mon_addr, CEPH_MAX_MON,
-			     &opt->num_mon);
+			     &opt->num_mon, false);
 	if (ret) {
 		error_plog(&log, "Failed to parse monitor IPs: %d", ret);
 		return ret;
@@ -422,15 +424,35 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 
 	switch (token) {
 	case Opt_ip:
+		if (opt->flags & CEPH_OPT_SERVERIP) {
+			error_plog(&log, "server_ip= param is already specified\n");
+			return -EINVAL;
+		}
 		err = ceph_parse_ips(param->string,
 				     param->string + param->size,
 				     &opt->my_addr,
-				     1, NULL);
+				     1, NULL, false);
 		if (err) {
 			error_plog(&log, "Failed to parse ip: %d", err);
 			return err;
 		}
 		opt->flags |= CEPH_OPT_MYIP;
+		break;
+
+	case Opt_server_ip:
+		if (opt->flags & CEPH_OPT_MYIP) {
+			error_plog(&log, "ip= param is already specified\n");
+			return -EINVAL;
+		}
+		err = ceph_parse_ips(param->string,
+				     param->string + param->size,
+				     &opt->my_addr,
+				     1, NULL, true);
+		if (err) {
+			error_plog(&log, "Failed to parse ip: %d", err);
+			return err;
+		}
+		opt->flags |= CEPH_OPT_SERVERIP;
 		break;
 
 	case Opt_fsid:

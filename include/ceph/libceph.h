@@ -40,6 +40,7 @@
 #define CEPH_OPT_NOMSGSIGN	  (1<<7) /* don't sign msgs */
 #define CEPH_OPT_ABORT_ON_FULL	  (1<<8) /* abort w/ ENOSPC when full */
 #define CEPH_OPT_NOOP_WRITE	  (1<<9) /* immediate comp of wr >= 4096  */
+#define CEPH_OPT_SERVERIP         (1<<10)/* specified server ip */
 
 #define CEPH_OPT_DEFAULT   (CEPH_OPT_TCP_NODELAY)
 

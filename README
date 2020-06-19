@@ -116,13 +116,13 @@ Restart only Ceph monitor(s):
 
 Start pech-osd accessing monitor over v1 protocol:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
                 name=$OSD fsid=`cat ./osd$OSD/fsid` log_level=5
 
 For the case when RBD images are required Pech proxy should be built
 and `class_dir` should be specified:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
                 name=$OSD fsid=`cat ./osd$OSD/fsid` \
                 class_dir=$CEPH/build/lib log_level=5
 
@@ -130,7 +130,7 @@ For DEBUG purposes maximum output log level can be specified: log_level=7
 
 Replication model can be specified with "replication" argument, for example:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 ip=0.0.0.0:$((1111+$OSD)) \
+  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
                 name=$OSD fsid=`cat ./osd$OSD/fsid` \
                 class_dir=$CEPH/build/lib log_level=5 replication=primary-copy
 
