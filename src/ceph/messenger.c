@@ -2206,7 +2206,8 @@ static int ceph_parse_server_name(const char *name, size_t namelen,
  */
 int ceph_parse_ips(const char *c, const char *end,
 		   struct ceph_entity_addr *addr,
-		   int max_count, int *count)
+		   int max_count, int *count,
+		   bool allow_0_port)
 {
 	int i, ret = -EINVAL;
 	const char *p = c;
@@ -2245,12 +2246,15 @@ int ceph_parse_ips(const char *c, const char *end,
 				port = (port * 10) + (*p - '0');
 				p++;
 			}
-			if (port == 0)
+			if (!allow_0_port && port == 0)
 				port = CEPH_MON_PORT;
 			else if (port > 65535)
 				goto bad;
 		} else {
-			port = CEPH_MON_PORT;
+			if (allow_0_port)
+				port = 0;
+			else
+				port = CEPH_MON_PORT;
 		}
 
 		addr_set_port(&addr[i], port);
@@ -3614,6 +3618,16 @@ int ceph_messenger_start_listen(struct ceph_messenger *msgr,
 	if (ret) {
 		pr_err("failed to bind port socket %d\n", ret);
 		goto err_sock;
+	}
+
+	if (addr_port(&msgr->inst.addr) == 0) {
+		ret = kernel_getsockname(sock, (struct sockaddr *)&addr);
+		if (ret < 0) {
+			pr_err("failed to getsockname() %d\n", ret);
+			goto err_sock;
+		}
+		msgr->inst.addr.in_addr = addr;
+		encode_my_addr(msgr);
 	}
 
 	ret = kernel_listen(sock, 128);
