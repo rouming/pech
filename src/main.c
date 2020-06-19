@@ -204,6 +204,15 @@ static int parse_osd_id(const char *name)
 	return osd_id;
 }
 
+static void init_logging(void)
+{
+	/*
+	 * Disable buffering for stdout. This is needed in case of
+	 * systemd service.
+	 */
+	setvbuf(stdout, NULL, _IONBF, 0);
+}
+
 int main(int argc, char **argv)
 {
 	struct init_struct init;
@@ -212,6 +221,7 @@ int main(int argc, char **argv)
 
 	memset(&init, 0, sizeof(init));
 
+	init_logging();
 	init_formatting();
 	init_pages();
 	init_sched();
