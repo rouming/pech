@@ -1,0 +1,16 @@
+[Unit]
+Description=Pech object storage daemon osd.%i
+After=network-online.target local-fs.target time-sync.target
+Wants=network-online.target local-fs.target time-sync.target
+
+[Service]
+ExecStartPre=/usr/local/bin/pech-config-parser.sh %i > /run/pech-osd@%i.env
+EnvironmentFile=-/run/pech-osd@%i.env
+ExecStart=/usr/local/bin/pech-osd mon_addrs=${MON_ADDRS} server_ip=0.0.0.0 name=%i fsid=${FSID} class_dir=${CLASS_DIR} replication=${REPLICATION} nocrc log_level=${LOG_LEVEL} ${EXTRA_ARGS}
+
+Restart=on-failure
+StartLimitBurst=3
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
