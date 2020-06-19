@@ -1,0 +1,17 @@
+[Unit]
+Description=Pech object storage daemon osd.%i
+After=network-online.target local-fs.target time-sync.target
+Wants=network-online.target local-fs.target time-sync.target
+
+[Service]
+LimitNOFILE=infinity
+ExecStartPre=/bin/bash -c "/var/lib/ceph/bin/pech-config-parser.sh %i > /run/pech-osd@%i.env"
+EnvironmentFile=-/run/pech-osd@%i.env
+ExecStart=/var/lib/ceph/bin/pech-osd --mon_addrs ${MON_ADDRS} --server_ip ${SERVER_IP} --name %i --fsid ${FSID} --class_dir ${CLASS_DIR} --replication ${REPLICATION} --nocrc --log_level ${LOG_LEVEL}
+
+Restart=on-failure
+StartLimitBurst=3
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

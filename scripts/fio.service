@@ -1,0 +1,16 @@
+[Unit]
+Description=FIO server service
+After=network-online.target local-fs.target time-sync.target
+Wants=network-online.target local-fs.target time-sync.target
+
+[Service]
+LimitNOFILE=infinity
+Environment="LD_LIBRARY_PATH=/var/lib/ceph/lib"
+ExecStart=/usr/bin/fio --server
+
+Restart=on-failure
+StartLimitBurst=3
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
