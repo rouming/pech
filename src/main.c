@@ -40,18 +40,30 @@ static int parse_options(struct ceph_options *opts, int argc, char **argv)
 		key = argv[i];
 		dout("%s '%s'\n", __func__, key);
 
+		if (strncmp(key, "--", 2)) {
+			pr_err("%s: key '%s' does not start with '--'\n",
+			       __func__, key);
+			return -EINVAL;
+		}
+		key += 2;
+
 		param = (struct fs_parameter) {
 			.key	= key,
 			.type	= fs_value_is_flag,
 		};
-		value = strchr(key, '=');
+
+		if (i + 1 < argc) {
+			value = argv[i + 1];
+			if (strncmp(value, "--", 2))
+				i++;
+			else
+				value = NULL;
+		} else {
+			value = NULL;
+		}
+
 		v_len = 0;
-
 		if (value) {
-			if (value == key)
-				continue;
-
-			*value++ = 0;
 			v_len = strlen(value);
 
 			/* Parse 'mon_addrs=' just here */

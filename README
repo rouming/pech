@@ -49,7 +49,7 @@ What Pech OSD does?
 
   For RBD images (e.g. fio/examples/rbd.fio) OSD class directory should
   be specified, i.e. where is your upstream Ceph built is located:
-  `class_dir=$CEPH/build/lib`.
+  `--class_dir $CEPH/build/lib`.
 
   The thing is that RBD images require loading of OSD object classes,
   which are shared objects and loaded by the OSD on OP_CALL request.
@@ -116,23 +116,23 @@ Restart only Ceph monitor(s):
 
 Start pech-osd accessing monitor over v1 protocol:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
-                name=$OSD fsid=`cat ./osd$OSD/fsid` log_level=5
+  $ OSD=0; ./pech-osd --mon_addrs ip.ip.ip.ip:50001 --server_ip=0.0.0.0 \
+                --name $OSD --fsid `cat ./osd$OSD/fsid` --log_level 5
 
 For the case when RBD images are required Pech proxy should be built
 and `class_dir` should be specified:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
-                name=$OSD fsid=`cat ./osd$OSD/fsid` \
-                class_dir=$CEPH/build/lib log_level=5
+  $ OSD=0; ./pech-osd --mon_addrs ip.ip.ip.ip:50001 --server_ip 0.0.0.0 \
+                --name $OSD --fsid `cat ./osd$OSD/fsid` \
+                --class_dir $CEPH/build/lib --log_level 5
 
-For DEBUG purposes maximum output log level can be specified: log_level=7
+For DEBUG purposes maximum output log level can be specified: --log_level 7
 
 Replication model can be specified with "replication" argument, for example:
 
-  $ OSD=0; ./pech-osd mon_addrs=ip.ip.ip.ip:50001 server_ip=0.0.0.0 \
-                name=$OSD fsid=`cat ./osd$OSD/fsid` \
-                class_dir=$CEPH/build/lib log_level=5 replication=primary-copy
+  $ OSD=0; ./pech-osd --mon_addrs ip.ip.ip.ip:50001 --server_ip 0.0.0.0 \
+                --name $OSD --fsid `cat ./osd$OSD/fsid` \
+                --class_dir $CEPH/build/lib --log_level 5 --replication primary-copy
 
 so "primary-copy" or "chain" are supported for now.
 
