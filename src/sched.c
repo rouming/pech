@@ -442,3 +442,15 @@ int kthread_stop(struct task_struct *task)
 
 	return ret;
 }
+
+/**
+ * msleep - sleep safely even with waitqueue interruptions
+ * @msecs: Time in milliseconds to sleep for
+ */
+void msleep(unsigned int msecs)
+{
+	unsigned long timeout = msecs_to_jiffies(msecs) + 1;
+
+	while (timeout)
+		timeout = schedule_timeout(timeout);
+}

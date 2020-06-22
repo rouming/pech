@@ -84,6 +84,8 @@ extern void schedule(void);
 extern long schedule_timeout(long timeout);
 extern long io_schedule_timeout(long timeout);
 
+extern void msleep(unsigned int msecs);
+
 static inline void preempt_disable(void)
 {
 	preempt_count++;
