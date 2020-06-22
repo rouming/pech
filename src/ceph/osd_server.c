@@ -2444,6 +2444,8 @@ static void ceph_stop_osd_server(struct ceph_osd_server *osds)
 			is_down = true;
 			break;
 		}
+		/* Don't flood, relax */
+		msleep(100);
 	}
 	if (is_down)
 		pr_notice(">>>> Tear down osd.%d\n", osds->osd);
@@ -2593,6 +2595,8 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 			is_up = true;
 			break;
 		}
+		/* Don't flood, relax */
+		msleep(100);
 	}
 	if (!is_up) {
 		ret = -ETIMEDOUT;
