@@ -2366,6 +2366,10 @@ static struct ceph_msg *osds_alloc_msg(struct ceph_connection *con,
 	case CEPH_MSG_OSD_REPOP:
 	case CEPH_MSG_OSD_REPOPREPLY:
 		return alloc_msg_with_bvec(osds, hdr);
+	case CEPH_MSG_PING:
+		/* TODO: */
+		*skip = 1;
+		return NULL;
 	case CEPH_MSG_OSD_OPREPLY:
 		/* fall through */
 	default:
