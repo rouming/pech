@@ -79,6 +79,7 @@ extern int kernel_accept(struct socket *sock, struct socket **newsock,
 extern void sock_release(struct socket *sock);
 extern int kernel_setsockopt(struct socket *sock, int level, int optname,
 			     char *optval, unsigned int optlen);
+extern int kernel_getsockname(struct socket *sock, struct sockaddr *addr);
 extern int kernel_getpeername(struct socket *sock, struct sockaddr *addr);
 extern int sock_recvmsg(struct socket *sock, struct kmsghdr *msg, int flags);
 extern int sock_sendmsg(struct socket *sock, struct kmsghdr *msg);

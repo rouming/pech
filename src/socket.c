@@ -407,6 +407,20 @@ int kernel_setsockopt(struct socket *sock, int level, int optname,
 }
 
 /**
+ *	kernel_getsockname - get the address which the socket is bound (kernel space)
+ *	@sock: socket
+ *	@addr: address holder
+ *
+ * 	Fills the @addr pointer with the address which the socket is bound.
+ *	Returns 0 or an error code.
+ */
+
+int kernel_getsockname(struct socket *sock, struct sockaddr *addr)
+{
+	return sock->ops->getname(sock, addr, 0);
+}
+
+/**
  *	kernel_peername - get the address which the socket is connected (kernel space)
  *	@sock: socket
  *	@addr: address holder
