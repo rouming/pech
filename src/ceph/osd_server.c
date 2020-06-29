@@ -2553,20 +2553,20 @@ int ceph_start_osd_server(struct ceph_osd_server *osds)
 	osds->store = ceph_memstore_create(client->options);
 	if (unlikely(IS_ERR(osds->store))) {
 		ret = PTR_ERR(osds->store);
-		goto free_cache;
+		goto destroy_wq;
 	}
-
-	ret = ceph_open_session(client);
-	if (unlikely(ret))
-		goto destroy_store;
-
-	pr_notice(">>>> Ceph session opened\n");
 
 	ret = ceph_messenger_start_listen(&client->msgr, &osds_con_ops);
 	if (unlikely(ret))
-		goto destroy_wq;
+		goto destroy_store;
 
 	pr_notice(">>>> Start listening\n");
+
+	ret = ceph_open_session(client);
+	if (unlikely(ret))
+		goto err;
+
+	pr_notice(">>>> Ceph session opened\n");
 
 	ret = ceph_monc_osd_to_crush_add(&client->monc, osds->osd, "0.0010");
 	if (unlikely(ret))
