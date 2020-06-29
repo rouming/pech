@@ -3368,8 +3368,9 @@ static void con_fault(struct ceph_connection *con)
 	dout("fault %p state %lu to peer %s\n",
 	     con, con->state, ceph_pr_addr(&con->peer_addr));
 
-	pr_warn("%s%lld %s %s\n", ENTITY_NAME(con->peer_name),
-		ceph_pr_addr(&con->peer_addr), con->error_msg);
+	if (con->peer_name.type != CEPH_ENTITY_TYPE_CLIENT)
+		pr_warn("%s%lld %s %s\n", ENTITY_NAME(con->peer_name),
+			ceph_pr_addr(&con->peer_addr), con->error_msg);
 	con->error_msg = NULL;
 
 	WARN_ON(con->state != CON_STATE_CONNECTING &&
