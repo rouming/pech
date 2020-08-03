@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/signalfd.h>
+#include <sys/eventfd.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -179,25 +179,56 @@ static void signal_event(struct event_item *ev)
 	init->stop_in_progress = true;
 }
 
+static __thread struct init_struct *init_struct;
+
+static void sig_handler(int signum)
+{
+	u64 v = 1;
+	write(init_struct->sig_fd, &v, sizeof(v));
+}
+
 static void init_signals(struct init_struct *init)
 {
+	struct sigaction sa;
 	sigset_t set;
 	int ret;
+
+	BUG_ON(init_struct);
+	init_struct = init;
 
 	sigfillset(&set);
 	ret = sigprocmask(SIG_BLOCK, &set, NULL);
 	BUG_ON(ret);
 
-	/* We care about SIGINT and SIGTERM only */
-	sigemptyset(&set);
-	sigaddset(&set, SIGINT);
-	sigaddset(&set, SIGTERM);
-	init->sig_fd = signalfd(-1, &set, 0);
+	/*
+	 * Why not to use signalfd? The problem is that kernel
+	 * function signalfd_poll() checks pending signals for
+	 * *current* process, but userpoll offloads vfs_epoll() call
+	 * to a worker (see ep_poll_callback_work()), which means
+	 * pending signals of the worker will be checked and 0 is
+	 * returned, obviously not what we expected.
+	 */
+	init->sig_fd = eventfd(0, EFD_NONBLOCK);
 	BUG_ON(init->sig_fd < 0);
 
 	INIT_EVENT(&init->sig_ev, signal_event);
-	init->sig_ev.events = EPOLLIN;
+	init->sig_ev.events = EPOLLET | EPOLLIN;
 	ret = event_item_add(&init->sig_ev, init->sig_fd);
+	BUG_ON(ret);
+
+	/* We care about SIGINT and SIGTERM only */
+	sigfillset(&set);
+	sigdelset(&set, SIGINT);
+	sigdelset(&set, SIGTERM);
+	ret = sigprocmask(SIG_SETMASK, &set, NULL);
+	BUG_ON(ret);
+
+	sa.sa_handler = sig_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	ret = sigaction(SIGINT, &sa, NULL);
+	BUG_ON(ret);
+	ret = sigaction(SIGTERM, &sa, NULL);
 	BUG_ON(ret);
 }
 
