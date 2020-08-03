@@ -264,14 +264,9 @@ int main(int argc, char **argv)
 
 	memset(&init, 0, sizeof(init));
 
+	/* First init logging and formatting */
 	init_logging();
 	init_formatting();
-	init_pages();
-	init_sched();
-	init_event(false);
-	init_workqueue();
-	init_modules();
-	init_signals(&init);
 
 	init.opt = ceph_alloc_options();
 	BUG_ON(!init.opt);
@@ -289,6 +284,14 @@ int main(int argc, char **argv)
 	init.osd = parse_osd_id(init.opt->name);
 	if (WARN(init.osd < 0, "'name' option does not contain a valid integer\n"))
 		return -1;
+
+	/* Init the rest */
+	init_pages();
+	init_sched();
+	init_event(!ceph_test_opt(init.opt, NO_UEPOLL));
+	init_workqueue();
+	init_modules();
+	init_signals(&init);
 
 	/* Create start task and wake up it */
 	task = task_create(start_task, &init);

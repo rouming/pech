@@ -275,6 +275,7 @@ enum {
 	Opt_tcp_nodelay,
 	Opt_abort_on_full,
 	Opt_noop_write,
+	Opt_uepoll,
 };
 
 static const struct fs_parameter_spec ceph_parameters[] = {
@@ -300,6 +301,7 @@ static const struct fs_parameter_spec ceph_parameters[] = {
 	fsparam_flag	("noop_write",			Opt_noop_write),
 	fsparam_string	("class_dir",			Opt_class_dir),
 	fsparam_string	("replication",			Opt_replication),
+	fsparam_flag_no	("uepoll",			Opt_uepoll),
 	{}
 };
 
@@ -585,6 +587,13 @@ int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
 		param->string = NULL;
 		break;
 
+	case Opt_uepoll:
+		if (!result.negated)
+			opt->flags &= ~CEPH_OPT_NO_UEPOLL;
+		else
+			opt->flags |= CEPH_OPT_NO_UEPOLL;
+		break;
+
 	default:
 		BUG();
 	}
@@ -655,6 +664,8 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 		       "chain" : "client-based");
 		seq_printf(m, "replication=%s,", rep);
 	}
+	if (show_all && (opt->flags & CEPH_OPT_NO_UEPOLL))
+		seq_puts(m, "nouepoll,");
 
 	/* drop redundant comma */
 	if (m->count != pos)
