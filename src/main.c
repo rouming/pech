@@ -268,7 +268,7 @@ int main(int argc, char **argv)
 	init_formatting();
 	init_pages();
 	init_sched();
-	init_event();
+	init_event(false);
 	init_workqueue();
 	init_modules();
 	init_signals(&init);

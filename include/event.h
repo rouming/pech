@@ -19,7 +19,7 @@ struct event_item {
 		.fd = -1,				\
 	}
 
-extern void init_event(void);
+extern void init_event(bool uepoll);
 extern void deinit_event(void);
 
 extern int event_item_add(struct event_item *, int fd);
