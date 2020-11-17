@@ -5,6 +5,7 @@
 Usage:
   fio-runner.py rbd --dir=<path> --name=<name> --fio-servers=<server>... --image=<image>  [--fio-opt=<key=value>...]
   fio-runner.py rbd-blkdev --dir=<path> --name=<name> --fio-servers=<server>... --dev=<dev> [--fio-opt=<key=value>...]
+  fio-runner.py cephfs --dir=<path> --name=<name> --fio-servers=<server>... --file=<file> [--fio-opt=<key=value>...]
   fio-runner.py show-results --dir=<path> --column=<name>... [--order=<str>]  [--include=<name>...] [--exclude=<name>...] [--csv] [--no-format]
 
 Options:
@@ -16,22 +17,39 @@ Options:
   --csv                  Shows results in CSV format.
   --no-format            Do not format values
 
+  --image=<image>
+  --dev=<dev>
+  --file=<file>          All have same meaning and denote image, device or file name
+                         which needs to be opened. Supports range '[N, M]', where N
+                         and M are unsigned integers, e.g. /mnt/cephfs/file[1-16] .
+                         Supports %FIO_SERVER_ID and %FIO_SERVER_NAME patterns, which
+                         are replaced with server sequence order number or server
+                         name, which helps to run loads on different images, e.g.
+                         /mnt/cephfs/file-%FIO_SERVER_ID-[1-16] option tells script
+                         to run a load on the first server with image range
+                         /mnt/cephfs/file-1-[1-16] and with the following image on
+                         the second server /mnt/cephfs/file-2-[1-16].
+
 Testing examples:
   # RBD userspace client
-  fio-runner.py rbd --dir=./TEST --name=rbd/pech/primary-copy/4k --fio-servers=blueshark-[2-8] --image=fio_test[1-16] --fio-opt="bs=4k"
+  fio-runner.py rbd --dir=./RESULTS --name=rbd/N/M/4k --fio-servers=ses-client-[1-8] --image=fio_test[1-16] --fio-opt="bs=4k"
 
   # RBD block device client
-  fio-runner.py rbd-blkdev --dir=./TEST --name=rbd-blkdev/pech/primary-copy/8k --fio-servers=blueshark-[2-8] --dev=/dev/rbd[1-16] --fio-opt="bs=8k"
+  fio-runner.py rbd-blkdev --dir=./RESULTS --name=rbd-blkdev/N/M/8k --fio-servers=ses-client-[1-8] --dev=/dev/rbd[1-16] --fio-opt="bs=8k"
+
+  # CephFS client
+  fio-runner.py cephfs --dir=./RESULTS --name=cephfs/N/M/8k --fio-servers=ses-client-[1-8] --file=/mnt/cephfs/file[1-16] --fio-opt="bs=8k"
+
 
 Getting results example:
   # write iops
-  fio-runner.py show-results --dir=./TEST --column=write/iops
+  fio-runner.py show-results --dir=./RESULTS --column=write/iops
 
   # read and write bandwidth with a special order
-  fio-runner.py show-results --dir=./TEST --order="4k,8k,16k,32k,64k,128k,256k,512k,1m" --column=write/bw --column=write/iops
+  fio-runner.py show-results --dir=./RESULTS --order="4k,8k,16k,32k,64k,128k,256k,512k,1m" --column=write/bw --column=write/iops
 
   # write latency, stddev and mean
-  fio-runner.py show-results --dir=./TEST --column=write/lat_ns/stddev --column=write/lat_ns/mean
+  fio-runner.py show-results --dir=./RESULTS --column=write/lat_ns/stddev --column=write/lat_ns/mean
 """
 from docopt import docopt, DocoptExit
 import configparser
@@ -42,6 +60,7 @@ import json
 import os
 import re
 import io
+import sys
 
 FIO_RBD_PATTERN = """
 [global]
@@ -91,6 +110,32 @@ numjobs=1
 
 """
 
+FIO_CEPHFS_PATTERN = """
+[global]
+fadvise_hint=0
+direct=1
+#ioengine=io_uring
+ioengine=libaio
+
+#iodepth_batch_submit=128
+#iodepth_batch_complete=128
+
+rw=randwrite
+size=256m
+
+### Careful, verify does not work with time_based
+#do_verify=1
+#verify=md5
+
+time_based=1
+runtime=10
+ramp_time=10
+
+iodepth=32
+numjobs=1
+
+"""
+
 FIO_JOB_SECTION = """
 [job%d]
 %s=%s
@@ -106,18 +151,34 @@ modes = {
         'fio_pattern'   : FIO_RBD_BLKDEV_PATTERN,
         'filename_key'  : '--dev',
         'filename_name' : 'filename',
+    },
+    'cephfs' : {
+        'fio_pattern'   : FIO_CEPHFS_PATTERN,
+        'filename_key'  : '--file',
+        'filename_name' : 'filename',
     }
 }
 
 def create_fio_job_file(path, fio_job):
+    dir = os.path.dirname(path)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
     with open(path ,"w+") as f:
         f.write(fio_job)
 
 def run_fio(ipath, servers, fio_job, cmd):
-    create_fio_job_file(ipath, fio_job)
+    srv_id = 1
     for srv in servers:
+        srv_ipath = ipath
+        srv_fio_job = fio_job
+        srv_fio_job = srv_fio_job.replace('%FIO_SERVER_ID', str(srv_id))
+        srv_fio_job = srv_fio_job.replace('%FIO_SERVER_NAME', srv)
+        srv_id += 1
+        # Replace server name for ipath
+        srv_ipath %= srv
+        create_fio_job_file(srv_ipath, srv_fio_job)
         cmd.append("--client=%s" % srv)
-        cmd.append("%s" % ipath)
+        cmd.append("%s" % srv_ipath)
     #cmd.insert(0, 'echo')
     subprocess.call(cmd)
 
@@ -153,7 +214,7 @@ def expand_names(names_):
 
     return (names, N)
 
-def test_rbd(mode, args):
+def start_load(mode, args):
     odir = args['--dir']
     name = args['--name']
     filename = args[mode['filename_key']]
@@ -174,7 +235,7 @@ def test_rbd(mode, args):
         fio_job += FIO_JOB_SECTION % (i+1, mode['filename_name'], filenames[i])
 
     opath = odir + '/fio-results.json'
-    ipath = odir + '/fio.ini'
+    ipath = odir + '/JOBS/%s/fio.ini' # Where '%s' is fio-server-name path
     cmd = ['fio', '--output-format=json', '--output=%s' % opath]
 
     run_fio(ipath, servers, fio_job, cmd)
@@ -464,11 +525,11 @@ def replace_fio_opts(fio_job, fio_opts):
 if __name__ == '__main__':
     try:
         args = docopt(__doc__, version='Fio runner')
-        if args['rbd']:
-            test_rbd(modes['rbd'], args)
-        elif args['rbd-blkdev']:
-            test_rbd(modes['rbd-blkdev'], args)
-        elif args['show-results']:
+        for mode in modes.keys():
+            if args[mode]:
+                start_load(modes[mode], args)
+                sys.exit()
+        if args['show-results']:
             show_results(args)
         else:
             assert()
