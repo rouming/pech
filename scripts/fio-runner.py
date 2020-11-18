@@ -2,6 +2,10 @@
 
 """Fio runner
 
+Requires:
+  fio >= 3.13
+  docopt (python3-docopt package)
+
 Usage:
   fio-runner.py rbd --dir=<path> --name=<name> --fio-servers=<server>... --image=<image>  [--fio-opt=<key=value>...]
   fio-runner.py rbd-blkdev --dir=<path> --name=<name> --fio-servers=<server>... --dev=<dev> [--fio-opt=<key=value>...]
